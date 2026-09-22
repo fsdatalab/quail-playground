@@ -31,7 +31,9 @@ from playground import regret
 from playground.demos import DEMOS, DEVICE, MODELS, demo
 from playground.prepare import read_manifest
 
-PROXY_TIMEOUT_S = 90.0
+# a request to a server that is still starting waits for it, so the
+# page can say "starting" instead of failing while a container restores
+PROXY_TIMEOUT_S = 600.0
 # a long poll on a server holds for at most this long
 MAX_WAIT_S = 60.0
 HOP_HEADERS = frozenset({

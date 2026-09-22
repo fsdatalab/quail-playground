@@ -71,12 +71,16 @@ The servers' bearer token comes from the workspace's
 DiffusionGemma's gated weights and tokenizer unless the
 `quail-hf-cache` Volume already holds them.
 
-Each server takes its memory snapshot the first time it starts, which
-is the first Run on that model, or:
+Each server takes its memory snapshot the first time it starts after a
+deploy, which is the first request to that model, or:
 
 ```bash
 modal run playground/modal_app.py::warm 2>&1 | tee warm.log
 ```
+
+Every deploy replaces the servers, so after a deploy each model loads
+once more before its new snapshot exists. Run `warm` after deploying
+and before a demo.
 
 ## During a demo
 

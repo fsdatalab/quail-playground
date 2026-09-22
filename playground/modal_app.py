@@ -287,7 +287,8 @@ def deployed_server_urls() -> dict:
     # servers' weights
     volumes={HF_CACHE_DIR: hf_cache},
     secrets=[secret],
-    timeout=600,
+    # longer than a proxied request may wait for a starting server
+    timeout=900,
     scaledown_window=SCALEDOWN_S,
     max_containers=1,
 )
