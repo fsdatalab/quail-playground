@@ -45,6 +45,8 @@ SERVERS_DIR = VOLUME_DIR / "quail-playground" / "servers"
 LOCAL_DIR = Path("/tmp/quail-playground")
 STATIC_DIR = Path("/root/web")
 DEMO_DATA_DIR = Path("/root/demo-data")
+HF_CACHE_DIR = "/root/.cache/huggingface"
+KERNEL_CACHE_DIR = "/root/.cache/kernels"
 # an idle server stays up this long after its last request; a restore
 # from the snapshot is what a later request pays
 SCALEDOWN_S = 15 * 60
@@ -70,9 +72,14 @@ def server_token() -> str:
 
 def build_demo_data() -> None:
     """Build every demo's tables and page data; runs while the image builds."""
+    import shutil
+
     from playground.prepare import build
 
     build(DEMO_DATA_DIR, workdir=LOCAL_DIR / "build")
+    # a Volume mounts only on an empty path; importing quail here fills
+    # the kernel cache directory the servers mount their Volume on
+    shutil.rmtree(KERNEL_CACHE_DIR, ignore_errors=True)
 
 
 # bump to force a fresh image build; Modal reuses a build whose
@@ -88,7 +95,7 @@ image = (
     .add_local_python_source("playground", copy=True)
     .run_function(build_demo_data, secrets=[secret], timeout=4 * 3600,
                   memory=16_384,
-                  volumes={"/root/.cache/huggingface": hf_cache})
+                  volumes={HF_CACHE_DIR: hf_cache})
     .add_local_dir("web", remote_path=str(STATIC_DIR))
 )
 
@@ -167,8 +174,8 @@ def server_class(cls):
         memory=98_304,
         volumes={
             str(VOLUME_DIR): results_volume,
-            "/root/.cache/huggingface": hf_cache,
-            "/root/.cache/kernels": kernel_cache,
+            HF_CACHE_DIR: hf_cache,
+            KERNEL_CACHE_DIR: kernel_cache,
         },
         secrets=[secret],
         timeout=24 * 3600,
@@ -278,7 +285,7 @@ def deployed_server_urls() -> dict:
     image=image,
     # the tokenizers behind the metrics come from the same cache as the
     # servers' weights
-    volumes={"/root/.cache/huggingface": hf_cache},
+    volumes={HF_CACHE_DIR: hf_cache},
     secrets=[secret],
     timeout=600,
     scaledown_window=SCALEDOWN_S,
