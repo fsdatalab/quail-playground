@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Quail playground</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&amp;family=Inter:wght@400;500;600&amp;display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header class="top">
+  <div class="brand">
+    <span class="brand-name">Quail playground</span>
+    <span class="brand-sub">Full Stack Data Lab · runs on Modal</span>
+  </div>
+  <nav id="nav" class="tabs" aria-label="Queries"></nav>
+  <div class="top-right">
+    <span id="server-state" class="server-state">—</span>
+    <a href="https://github.com/fsdatalab/quail">Quail</a>
+    <a href="https://github.com/fsdatalab/quail-playground">GitHub</a>
+  </div>
+</header>
+<main>
+  <section class="request">
+    <span class="method">POST</span>
+    <span id="endpoint" class="endpoint mono">…</span>
+    <span class="mono">/v1/queries</span>
+    <span id="query-id" class="mono query-id"></span>
+    <span class="spacer"></span>
+    <span id="state" class="state idle">IDLE</span>
+    <span id="timer" class="timer mono">0.0 s</span>
+    <button id="cancel" disabled>Cancel</button>
+    <button id="run" class="primary">Run</button>
+  </section>
+
+  <section class="split">
+    <div class="pane">
+      <div class="pane-head">
+        <span id="demo-title" class="pane-title">Query</span>
+        <span id="model" class="mono muted"></span>
+      </div>
+      <pre id="sql" class="sql"></pre>
+      <p id="note" class="note"></p>
+    </div>
+    <div class="pane">
+      <div class="pane-head">
+        <span class="pane-tabs">
+          <button class="pane-tab active" data-pane="plan">Plan</button>
+          <button class="pane-tab" data-pane="events">Events <span id="events-count"></span></button>
+        </span>
+        <span id="progress" class="mono muted"></span>
+      </div>
+      <pre id="plan" class="plan"></pre>
+      <ol id="events" class="events" hidden></ol>
+    </div>
+  </section>
+
+  <section id="cards" class="cards"></section>
+
+  <section id="viz" class="viz"></section>
+
+  <footer id="caption" class="caption"></footer>
+</main>
+<script src="/static/app.js"></script>
+</body>
+</html>
