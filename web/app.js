@@ -386,6 +386,8 @@ async function finish(run) {
   } catch (error) {
     logEvent(run, `metrics unavailable: ${error.message}`);
   }
+  // the cards first: a view may still fetch the saved join tables
+  renderCards(run, metrics);
   await state.viz.onFinished(run, metrics);
   renderCards(run, metrics);
 }
