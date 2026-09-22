@@ -64,8 +64,17 @@ function pct(part, whole) {
   return whole ? `${Math.round(100 * part / whole)}%` : "—";
 }
 
-async function getJson(path, options) {
-  const response = await fetch(path, options);
+async function getJson(path, options, retries = 0) {
+  let response;
+  for (let attempt = 0; ; attempt++) {
+    try {
+      response = await fetch(path, options);
+      break;
+    } catch (error) {
+      if (attempt >= retries) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 1000 * (attempt + 1)));
+    }
+  }
   const text = await response.text();
   let data = null;
   try { data = text ? JSON.parse(text) : null; } catch (error) { data = { raw: text }; }
@@ -250,7 +259,8 @@ async function run() {
     applyStatus(run, status);
     while (!run.done) {
       const newer = await getJson(
-        `/s/${demo.model}/v1/queries/${run.id}?after=${run.revision}&wait=${POLL_WAIT_S}`);
+        `/s/${demo.model}/v1/queries/${run.id}?after=${run.revision}&wait=${POLL_WAIT_S}`,
+        undefined, 5);
       if (newer.revision > run.revision) applyStatus(run, newer);
       await drainAnswers(run);
       if (DONE.has(newer.state)) run.done = true;
@@ -326,7 +336,8 @@ async function drainAnswers(run) {
   if (saved <= run.seen && !run.done && !DONE.has(run.status.state)) return;
   while (true) {
     const page = await getJson(
-      `/s/${run.model}/v1/queries/${run.id}/answers?after=${run.seen}&limit=${ANSWERS_PAGE}`);
+      `/s/${run.model}/v1/queries/${run.id}/answers?after=${run.seen}&limit=${ANSWERS_PAGE}`,
+      undefined, 5);
     if (!page.answers.length) break;
     run.seen = page.next;
     state.viz.onAnswers(page.answers);
@@ -344,7 +355,9 @@ async function finish(run) {
   logEvent(run, `succeeded: ${fmtInt(status.result.rows)} output rows`);
   let metrics = null;
   try {
-    metrics = await getJson(`/metrics/${run.model}/${run.id}?demo=${run.demo.key}`);
+    run.computing = true;
+    renderCards(run, null);
+    metrics = await getJson(`/metrics/${run.model}/${run.id}?demo=${run.demo.key}`, undefined, 3);
     logEvent(run, `metrics: ${fmtInt(metrics.input_tokens)} requested input tokens, ` +
       `${fmtInt(metrics.fresh_tokens)} fresh, minimum ${fmtInt(metrics.minimum_tokens)}`);
   } catch (error) {
@@ -368,34 +381,38 @@ function renderCards(run, metrics) {
   const price = state.config.usd_per_hour;
   const live = state.viz ? state.viz.counts() : {};
   const m = metrics || {};
+  // while the page computes the numbers of a finished query, the cards say so
+  const waiting = run && run.computing && !metrics ? "computing…" : "—";
   const cards = [];
   const outputLabel = state.viz ? state.viz.outputLabel : "output rows";
   const outputValue = run && run.status && run.status.result
     ? fmtInt(run.status.result.rows) : (live.output === undefined ? "—" : fmtInt(live.output));
   if (demo.view === "compaction") {
-    cards.push(card(fmtSeconds(m.wall_s), "query time on the GPU",
+    const v = (value) => (value === undefined || value === null || value === "—") ? waiting : value;
+    cards.push(card(v(metrics ? fmtSeconds(m.wall_s) : null), "query time on the GPU",
       "excluding model startup", !metrics));
-    cards.push(card(fmtUsd(m.gpu_cost_usd), "GPU cost", `one H100 at $${price}/h`, !metrics));
-    cards.push(card(fmtCompact(m.input_tokens), "requested input tokens",
+    cards.push(card(v(metrics ? fmtUsd(m.gpu_cost_usd) : null), "GPU cost", `one H100 at $${price}/h`, !metrics));
+    cards.push(card(v(metrics ? fmtCompact(m.input_tokens) : null), "requested input tokens",
       m.tokens_per_second ? `${fmtInt(m.tokens_per_second)} tokens/second` : "", !metrics));
-    cards.push(card(fmtCompact(m.fresh_tokens), "fresh input tokens computed",
-      m.cached_tokens !== undefined ? `${fmtCompact(m.cached_tokens)} read from KV` : "", !metrics));
-    cards.push(card(m.regret_tokens === undefined ? "—" : fmtCompact(m.regret_tokens),
+    cards.push(card(v(metrics ? fmtCompact(m.fresh_tokens) : null), "fresh input tokens computed",
+      m.kv_read_tokens !== undefined && m.kv_read_tokens !== null ? `${fmtCompact(m.kv_read_tokens)} read from KV` : "", !metrics));
+    cards.push(card(v(metrics ? (m.regret_tokens === null ? "not measured" : fmtCompact(m.regret_tokens)) : null),
       "KV regret", "recomputed prefix tokens", !metrics));
     cards.push(card(live.before !== undefined ? `${fmtCompact(live.before)} → ${fmtCompact(live.after)}` : "—",
       "tool output tokens before → after",
       live.before ? `${pct(live.before - live.after, live.before)} removed` : "", false));
   } else {
-    cards.push(card(m.tokens_per_second ? fmtInt(m.tokens_per_second) : "—", "tokens/second",
+    const v = (value) => (value === undefined || value === null || value === "—") ? waiting : value;
+    cards.push(card(v(metrics && m.tokens_per_second ? fmtInt(m.tokens_per_second) : null), "tokens/second",
       m.input_tokens ? `${fmtCompact(m.input_tokens)} requested input tokens` : "", !metrics));
-    cards.push(card(fmtCompact(m.fresh_tokens), "fresh input tokens computed", "", !metrics));
-    cards.push(card(fmtCompact(m.cached_tokens), "tokens read from KV",
-      m.cached_tokens && m.input_tokens ? `${pct(m.cached_tokens, m.input_tokens)} of the input` : "",
+    cards.push(card(v(metrics ? fmtCompact(m.fresh_tokens) : null), "fresh input tokens computed", "", !metrics));
+    cards.push(card(v(metrics ? fmtCompact(m.kv_read_tokens) : null), "tokens read from KV",
+      m.kv_read_tokens && m.input_tokens ? `${pct(m.kv_read_tokens, m.input_tokens)} of the requested input` : "",
       !metrics));
-    cards.push(card(m.regret_tokens === undefined ? "—" : (m.regret_tokens === null ? "not measured" : fmtCompact(m.regret_tokens)),
+    cards.push(card(v(metrics ? (m.regret_tokens === null ? "not measured" : fmtCompact(m.regret_tokens)) : null),
       "KV regret",
       m.minimum_tokens ? `minimum ${fmtCompact(m.minimum_tokens)} with unlimited KV` : "", !metrics));
-    cards.push(card(fmtUsd(m.gpu_cost_usd), "GPU cost",
+    cards.push(card(v(metrics ? fmtUsd(m.gpu_cost_usd) : null), "GPU cost",
       m.wall_s ? `${fmtSeconds(m.wall_s)} on one H100 at $${price}/h` : `one H100 at $${price}/h`, !metrics));
     cards.push(card(outputValue, outputLabel, "", false));
   }

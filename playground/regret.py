@@ -214,16 +214,22 @@ def metrics(report: dict, numbers: dict, *, gpus: int,
     """Combine the report with the token counts into the page's numbers.
 
     Throughput divides requested input tokens by the query's wall time.
-    Cost is wall time in hours times the GPU count and hourly price;
-    model startup is excluded, as the wall time excludes it.
+    Tokens read from KV are the requested input tokens the engine did
+    not compute: requested minus fresh. Cost is wall time in hours times
+    the GPU count and hourly price; model startup is excluded, as the
+    wall time excludes it.
     """
     wall_s = float(report["wall_s"])
     requested = numbers.get("input_tokens")
+    fresh = report.get("fresh_tokens")
+    kv_read = (requested - fresh if isinstance(requested, int)
+               and isinstance(fresh, int) else None)
     return {
         "wall_s": wall_s,
         "boot_s": report.get("boot_s"),
-        "fresh_tokens": report.get("fresh_tokens"),
+        "fresh_tokens": fresh,
         "cached_tokens": report.get("cached_tokens"),
+        "kv_read_tokens": kv_read,
         "input_tokens": requested,
         "minimum_tokens": numbers.get("minimum_tokens"),
         "regret_tokens": numbers.get("regret_tokens"),

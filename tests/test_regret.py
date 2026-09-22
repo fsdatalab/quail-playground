@@ -65,6 +65,7 @@ def test_filter_pieces_and_minimum_for_a_two_stage_filter(tiny_tables):
     assert summary["tokens_per_second"] == expected_requested / 2.0
     assert summary["gpu_cost_usd"] == pytest.approx(2.0 / 3600 * 3.6)
     assert summary["regret_tokens"] == 7 and summary["cached_tokens"] == 3
+    assert summary["kv_read_tokens"] == expected_requested - report["fresh_tokens"]
 
 
 def test_join_pieces_count_partners_once_per_anchor(tiny_tables):
