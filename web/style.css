@@ -230,7 +230,7 @@ canvas.cells { width: 100%; image-rendering: pixelated; border: 1px solid var(--
 .traj-name { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: var(--foreground); }
 .traj-bar { position: relative; height: .7rem; }
 .traj-bar .base { position: absolute; left: 0; top: 50%; height: 1px; background: var(--gray-2); }
-.traj-bar .box { position: absolute; top: 0; height: 100%; border: 1px solid var(--gray-3); background: #fff; }
+.traj-bar .box { position: absolute; top: 0; height: 100%; border: 1px solid var(--gray-3); background: #fff; transition: left .7s ease, width .7s ease, opacity .7s ease, background-color .3s; }
 .traj-bar .box.keep { background: var(--primary); border-color: var(--primary); }
 .traj-bar .box.truncate { background: var(--primary-soft); border-color: var(--primary-soft); }
 .traj-bar .box.drop { background: var(--gray-1); border-color: var(--gray-1); }

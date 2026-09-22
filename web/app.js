@@ -595,7 +595,7 @@ class ReportMatrix {
     this.terms = data.terms;
     this.joinLabels = (demo.hints && demo.hints.joins) || { n: "neurological", c: "cardiovascular" };
     this.filterLabels = (demo.hints && demo.hints.filters) || {};
-    this.outputLabel = "reports in the output";
+    this.outputLabel = "output rows (report, term, term)";
     this.caption = "Rows are reports, columns are reaction terms. The three filters color the headers: " +
       "a serious report keeps its row, a neurological term is blue, a cardiovascular term is orange. " +
       "Each dot is a report-term pair the model answered true, blue for the neurological join and " +
@@ -806,21 +806,26 @@ class ReportMatrix {
     const rows = [...this.matchesFor.entries()].filter(([, sets]) => sets.n.size && sets.c.size);
     this.resultsTitle.replaceChildren(
       "serious reports with a neurological and a cardiovascular reaction ",
-      el("span", { class: "mono" }, `${rows.length} reports · each pair is one output row`));
+      el("span", { class: "mono" }, `${rows.length} reports · every (report, neurological term, cardiovascular term) triple is one output row · first 25 shown`));
     if (!rows.length) {
       this.results.replaceChildren(el("p", { class: "empty" }, "no report has matched both joins yet"));
       return;
     }
     const term = (t) => this.terms[t].term;
-    this.results.replaceChildren(...rows.slice(0, 40).map(([row, sets]) => {
+    const SHOWN = 8;
+    const list = (set) => {
+      const names = [...set].slice(0, SHOWN).map(term).join(", ");
+      return set.size > SHOWN ? `${names} … +${set.size - SHOWN} more` : names;
+    };
+    this.results.replaceChildren(...rows.slice(0, 25).map(([row, sets]) => {
       const report = this.reports[row];
       return el("div", { class: "report" },
         el("div", { class: "report-head" }, el("b", {}, report.id), `${fmtInt(report.tokens)} tokens`,
           this.kv[row] === 3 ? "prefix computed again" : this.kv[row] === 2 ? "prefix evicted" : "prefix in KV"),
         el("div", { class: "report-text" }, report.head),
         el("div", { class: "terms" },
-          el("span", { class: "k blue" }, this.joinLabels.n), el("span", {}, [...sets.n].map(term).join(", ")),
-          el("span", { class: "k orange" }, this.joinLabels.c), el("span", {}, [...sets.c].map(term).join(", "))));
+          el("span", { class: "k blue" }, `${this.joinLabels.n} (${sets.n.size})`), el("span", {}, list(sets.n)),
+          el("span", { class: "k orange" }, `${this.joinLabels.c} (${sets.c.size})`), el("span", {}, list(sets.c))));
     }));
   }
 }
@@ -852,15 +857,24 @@ class Trajectories {
   init(container) {
     this.countsNode = el("span", { class: "counts" });
     const maxTokens = Math.max(1, ...this.conversations.map((c) => c.tokens));
-    this.pxPerToken = 1 / maxTokens;
+    this.pxPerToken = 100 / maxTokens;     // percent of the bar per token
     const columns = [el("div", {}), el("div", {})];
+    // every box is made once and moved in place later, so a decision
+    // animates the row from its length before to its length after
     this.rowsNodes = this.conversations.map((conversation, index) => {
-      const bar = el("div", { class: "traj-bar" });
+      const bar = el("div", { class: "traj-bar" },
+        el("span", { class: "base", style: `width:${(conversation.tokens * this.pxPerToken).toFixed(2)}%` }));
+      const boxes = conversation.calls.map((call) => {
+        const box = el("span", { class: "box" + (call.pinned ? " pinned" : ""),
+          title: `${call.id} ${call.tool}: ${fmtInt(call.tokens)} tokens` });
+        bar.append(box);
+        return box;
+      });
       const after = el("span", { class: "traj-after" });
       const node = el("div", { class: "traj" },
         el("span", { class: "traj-name", title: conversation.name }, conversation.name), bar, after);
       columns[index < this.conversations.length / 2 ? 0 : 1].append(node);
-      return { bar, after };
+      return { bar, boxes, after };
     });
     container.replaceChildren(
       el("div", { class: "legend" },
@@ -869,7 +883,7 @@ class Trajectories {
         el("span", {}, el("span", { class: "swatch", style: "background:#f6d3da" }), "truncate to 300 chars"),
         el("span", {}, el("span", { class: "swatch", style: "background:#ececec" }), "drop"),
         el("span", {}, el("span", { class: "swatch", style: "background:#2a2828" }), "pinned: first message and last 6 calls"),
-        el("span", {}, "box width = tool output tokens"),
+        el("span", {}, "box width = tool output tokens · gray line = length before"),
         this.countsNode),
       el("div", { class: "traj-cols" }, ...columns));
     this.renderAll();
@@ -929,21 +943,33 @@ class Trajectories {
     this.renderCounts();
   }
 
+  // A call's width after the decision: kept and pinned results keep
+  // their tokens, a truncated one shrinks to its 300-character head,
+  // a dropped one collapses, so the row compacts to the left.
+  widthAfter(call, decision) {
+    if (!decision) return call.tokens;
+    if (decision === "keep" || decision === "pinned") return call.tokens;
+    if (decision === "truncate") return call.truncated_tokens;
+    return 0;
+  }
+
   renderRow(row) {
     const conversation = this.conversations[row];
-    const { bar, after } = this.rowsNodes[row];
+    const { boxes, after } = this.rowsNodes[row];
     const decisions = this.decisions.get(row);
-    const scale = 100 * this.pxPerToken;
-    const boxes = [el("span", { class: "base", style: `width:${(conversation.tokens * scale).toFixed(2)}%` })];
     let left = 0;
-    for (const call of conversation.calls) {
-      const width = Math.max(0.35, call.tokens * scale);
-      const decision = decisions ? decisions.get(call.id) : (call.pinned ? "pinned" : "");
-      boxes.push(el("span", { class: `box ${decision}`, title: `${call.id} ${call.tool}: ${fmtInt(call.tokens)} tokens${decision ? " · " + decision : ""}`,
-        style: `left:${left.toFixed(2)}%;width:${width.toFixed(2)}%` }));
-      left += width + 0.15;
-    }
-    bar.replaceChildren(...boxes);
+    conversation.calls.forEach((call, index) => {
+      const decision = decisions ? decisions.get(call.id) : null;
+      const tokens = this.widthAfter(call, decision);
+      const width = tokens > 0 ? Math.max(0.35, tokens * this.pxPerToken) : 0;
+      const box = boxes[index];
+      box.className = "box" + (decision ? ` ${decision}` : (call.pinned ? " pinned" : ""));
+      box.style.left = `${left.toFixed(2)}%`;
+      box.style.width = `${width.toFixed(2)}%`;
+      box.style.opacity = width > 0 ? "1" : "0";
+      if (decision) box.title = `${call.id} ${call.tool}: ${fmtInt(call.tokens)} tokens · ${decision}`;
+      left += width > 0 ? width + 0.15 : 0;
+    });
     if (decisions) {
       const kept = this.tokensAfter(conversation, decisions);
       after.replaceChildren(`${fmtCompact(conversation.tokens)} → ${fmtCompact(kept)} `,
