@@ -2,7 +2,11 @@
 
 A web page for demoing [Quail](https://github.com/fsdatalab/quail): four
 AI-SQL queries, each running on Quail Server on its own H100 on Modal,
-with the answers drawn as they arrive.
+with the answers drawn as they arrive. Sentiment and ending
+each draw one cell per review. BIO-4 draws the plan as a tree and lists
+each report that passed the serious-event filter, with the terms matched
+so far. Compaction draws one box per tool call; the box shrinks when
+that call is kept, truncated, or dropped.
 
 | Query | Model | Data |
 | --- | --- | --- |
