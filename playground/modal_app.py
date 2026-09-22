@@ -23,9 +23,10 @@ Data on the ``quail-results`` Volume:
 ``/results/quail-playground/servers/<model>`` holds that server's
 inputs, results, and database checkpoint.
 
-The bearer token comes from the ``quail-server-token`` secret, the same
-one ``quail.server.modal_app`` uses. Add ``HF_TOKEN`` to it for
-DiffusionGemma's gated weights.
+The bearer token comes from the ``quail-service-token`` secret of the
+workspace, as ``QUAIL_SERVER_TOKEN`` or ``QUAIL_SERVICE_TOKEN``. Add
+``HF_TOKEN`` to it for DiffusionGemma's gated weights when the
+``quail-hf-cache`` Volume does not hold them yet.
 """
 
 from __future__ import annotations
@@ -54,8 +55,17 @@ app = modal.App(APP_NAME)
 results_volume = modal.Volume.from_name("quail-results", create_if_missing=True)
 hf_cache = modal.Volume.from_name("quail-hf-cache", create_if_missing=True)
 kernel_cache = modal.Volume.from_name("quail-kernel-cache", create_if_missing=True)
-secret = modal.Secret.from_name("quail-server-token",
-                                required_keys=["QUAIL_SERVER_TOKEN"])
+SECRET_NAME = "quail-service-token"
+secret = modal.Secret.from_name(SECRET_NAME)
+
+
+def server_token() -> str:
+    """The bearer token of the servers, from either variable of the secret."""
+    token = os.environ.get("QUAIL_SERVER_TOKEN") or os.environ.get(
+        "QUAIL_SERVICE_TOKEN")
+    if not token:
+        raise RuntimeError(f"the {SECRET_NAME} secret needs QUAIL_SERVER_TOKEN")
+    return token
 
 
 def build_demo_data() -> None:
@@ -65,11 +75,15 @@ def build_demo_data() -> None:
     build(DEMO_DATA_DIR, workdir=LOCAL_DIR / "build")
 
 
+# bump to force a fresh image build; Modal reuses a build whose
+# definition is unchanged, including one still in progress
+IMAGE_VERSION = "2"
+
 image = (
     modal.Image.from_registry(CUDA_BASE, add_python="3.12")
     .entrypoint([])
     .apt_install("git")
-    .env(CACHE_ENV)
+    .env({**CACHE_ENV, "PLAYGROUND_IMAGE_VERSION": IMAGE_VERSION})
     .uv_sync(uv_version=UV_VERSION)
     .add_local_python_source("playground", copy=True)
     .run_function(build_demo_data, secrets=[secret], timeout=4 * 3600,
@@ -112,7 +126,7 @@ class ServerContainer:
             print(f"restored {self.db_copy} to {self.local_db}", flush=True)
         self.server = PlaygroundServer(
             self.model, self.data_dir, self.local_db,
-            os.environ["QUAIL_SERVER_TOKEN"], executor=self.executor)
+            server_token(), executor=self.executor)
         inner = self.server.server
         self.checkpoint = Checkpoint(inner.store, self.db_copy,
                                      commit=results_volume.commit)
@@ -262,6 +276,9 @@ def deployed_server_urls() -> dict:
 
 @app.function(
     image=image,
+    # the tokenizers behind the metrics come from the same cache as the
+    # servers' weights
+    volumes={"/root/.cache/huggingface": hf_cache},
     secrets=[secret],
     timeout=600,
     scaledown_window=SCALEDOWN_S,
@@ -277,7 +294,7 @@ def page():
     return create_web_app(WebSettings(
         static_dir=STATIC_DIR, data_dir=DEMO_DATA_DIR,
         servers=deployed_server_urls(),
-        token=os.environ.get("QUAIL_SERVER_TOKEN"),
+        token=server_token(),
         usd_per_hour=H100_USD_PER_HOUR))
 
 

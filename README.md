@@ -52,8 +52,6 @@ installs `quail-engine` from the GitHub commit the lock pins.
 
 ```bash
 uv sync
-modal secret create quail-server-token \
-    QUAIL_SERVER_TOKEN=<token> HF_TOKEN=<hugging-face-token>
 modal deploy playground/modal_app.py 2>&1 | tee deploy.log
 ```
 
@@ -67,9 +65,11 @@ change to `playground/`.
 servers. Open the page; that is the whole demo. A server registers its
 demo tables when it starts, and Run submits the query.
 
-The secret is the same `quail-server-token` that
-`quail.server.modal_app` uses. `HF_TOKEN` is needed for DiffusionGemma's
-gated weights and tokenizer.
+The servers' bearer token comes from the workspace's
+`quail-service-token` secret (`QUAIL_SERVER_TOKEN` or
+`QUAIL_SERVICE_TOKEN`). `HF_TOKEN` in the same secret is needed for
+DiffusionGemma's gated weights and tokenizer unless the
+`quail-hf-cache` Volume already holds them.
 
 Each server takes its memory snapshot the first time it starts, which
 is the first Run on that model, or:
