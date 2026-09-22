@@ -107,3 +107,13 @@ def test_add_input_registers_a_file_the_way_an_upload_lands(tmp_path):
     with pytest.raises(ValueError, match="does not hash"):
         server.add_input("0" * 64, source)
     server.server.stop()
+
+
+def test_warm_servers_reports_each_model(monkeypatch):
+    from playground import warm
+
+    monkeypatch.setattr(warm, "ping", lambda endpoint, timeout_s=0: 401)
+    lines = warm.warm_servers({QWEN3_4B: "http://a", RERANKER: None})
+    assert lines[0].startswith("qwen3-4b-fp8: HTTP 401 after")
+    assert lines[1] == "qwen3-reranker-0.6b-bf16: no server deployed"
+    assert lines[2] == "diffusion-gemma-26b-a4b-fp8: no server deployed"

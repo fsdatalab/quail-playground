@@ -9,6 +9,7 @@
 const $ = (id) => document.getElementById(id);
 const DONE = new Set(["succeeded", "failed", "interrupted", "cancelled"]);
 const POLL_WAIT_S = 25;
+const SERVER_START_LIMIT_MS = 20 * 60 * 1000;
 const ANSWERS_PAGE = 5000;
 
 const state = {
@@ -191,18 +192,26 @@ async function checkServer(model) {
   }
   node.textContent = `${model}: starting server…`;
   node.className = "server-state starting";
-  try {
-    await getJson(`/s/${model}/v1/capabilities`);
-    if (state.demo.model === model) {
-      node.textContent = `${model}: ready on one H100`;
-      node.className = "server-state ready";
-    }
-  } catch (error) {
-    if (state.demo.model === model) {
-      node.textContent = `${model}: ${error.message}`;
-      node.className = "server-state missing";
+  const started = performance.now();
+  // a container restoring from its snapshot, or loading the model after
+  // a deploy, takes minutes; keep asking until it answers
+  while (performance.now() - started < SERVER_START_LIMIT_MS) {
+    try {
+      await getJson(`/s/${model}/v1/capabilities`);
+      if (state.demo.model === model) {
+        node.textContent = `${model}: ready on one H100`;
+        node.className = "server-state ready";
+      }
+      return;
+    } catch (error) {
+      if (state.demo.model !== model) return;
+      const seconds = Math.round((performance.now() - started) / 1000);
+      node.textContent = `${model}: starting server… ${seconds} s (${error.message})`;
+      await new Promise((resolve) => setTimeout(resolve, 3000));
     }
   }
+  node.textContent = `${model}: the server did not start`;
+  node.className = "server-state missing";
 }
 
 function setState(name) {

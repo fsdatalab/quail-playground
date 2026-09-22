@@ -287,8 +287,9 @@ def deployed_server_urls() -> dict:
     # servers' weights
     volumes={HF_CACHE_DIR: hf_cache},
     secrets=[secret],
-    # longer than a proxied request may wait for a starting server
-    timeout=900,
+    cpu=2.0,
+    memory=4_096,
+    timeout=600,
     scaledown_window=SCALEDOWN_S,
     max_containers=1,
 )
@@ -311,7 +312,11 @@ def warm():
     """Start every server once, so each takes its snapshot before a demo.
 
     modal run playground/modal_app.py::warm
+
+    A plain request to each server does the same: ``python -m
+    playground.warm`` sends one, without starting a Modal run.
     """
-    for model in MODELS:
-        print(f"{model}: starting", flush=True)
-        print(f"{model}: {deployed_server(model).ping.remote()} ready", flush=True)
+    from playground.warm import warm_servers
+
+    for line in warm_servers(deployed_server_urls()):
+        print(line, flush=True)

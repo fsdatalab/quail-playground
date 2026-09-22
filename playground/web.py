@@ -12,8 +12,10 @@ input tables and the model's tokenizer.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import threading
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
@@ -31,9 +33,10 @@ from playground import regret
 from playground.demos import DEMOS, DEVICE, MODELS, demo
 from playground.prepare import read_manifest
 
-# a request to a server that is still starting waits for it, so the
-# page can say "starting" instead of failing while a container restores
-PROXY_TIMEOUT_S = 600.0
+# a proxied request waits this long for a server; the page retries its
+# readiness ping while a container is still restoring
+PROXY_TIMEOUT_S = 120.0
+HEARTBEAT_S = 30.0
 # a long poll on a server holds for at most this long
 MAX_WAIT_S = 60.0
 HOP_HEADERS = frozenset({
@@ -259,9 +262,29 @@ def _error(message: str, status: int) -> JSONResponse:
     return JSONResponse({"error": {"message": message}}, status_code=status)
 
 
+def _heartbeat(started: float) -> None:
+    """Print a line every HEARTBEAT_S from a thread, so a frozen container shows."""
+    while True:
+        time.sleep(HEARTBEAT_S)
+        print(f"page alive {time.time() - started:.0f} s", flush=True)
+
+
+async def _loop_lag(started: float) -> None:
+    """Print how late the event loop wakes, so a blocked loop shows."""
+    while True:
+        before = time.monotonic()
+        await asyncio.sleep(HEARTBEAT_S)
+        lag = time.monotonic() - before - HEARTBEAT_S
+        print(f"page loop lag {lag * 1000:.0f} ms at {time.time() - started:.0f} s",
+              flush=True)
+
+
 def create_web_app(settings: WebSettings) -> Starlette:
     """Build the page's Starlette application."""
     metrics = Metrics(settings)
+    started = time.time()
+    threading.Thread(target=_heartbeat, args=(started,), daemon=True,
+                     name="page-heartbeat").start()
     client = httpx.AsyncClient(timeout=httpx.Timeout(
         PROXY_TIMEOUT_S, read=PROXY_TIMEOUT_S + MAX_WAIT_S))
 
@@ -356,7 +379,14 @@ def create_web_app(settings: WebSettings) -> Starlette:
         Route("/metrics/{model}/{query_id}", query_metrics),
         Route("/joins/{model}/{query_id}", join_pairs),
     ]
-    app = Starlette(routes=routes)
+    async def lifespan(app):
+        task = asyncio.create_task(_loop_lag(started))
+        try:
+            yield
+        finally:
+            task.cancel()
+
+    app = Starlette(routes=routes, lifespan=lifespan)
     app.state.metrics = metrics
     return app
 

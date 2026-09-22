@@ -75,8 +75,11 @@ Each server takes its memory snapshot the first time it starts after a
 deploy, which is the first request to that model, or:
 
 ```bash
-modal run playground/modal_app.py::warm 2>&1 | tee warm.log
+uv run python -m playground.warm https://<page url>
 ```
+
+That sends one request to each server and waits for the answer; no
+Modal run is involved.
 
 Every deploy replaces the servers, so after a deploy each model loads
 once more before its new snapshot exists. Run `warm` after deploying
