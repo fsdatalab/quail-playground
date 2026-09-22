@@ -12,6 +12,7 @@ const POLL_WAIT_S = 25;
 const SERVER_START_LIMIT_MS = 20 * 60 * 1000;
 const METRICS_LIMIT_MS = 15 * 60 * 1000;
 const ANSWERS_PAGE = 5000;
+const CUSTOM_QUERY_LIMIT = 100;
 
 const state = {
   config: null,
@@ -21,6 +22,8 @@ const state = {
   run: null,         // the current run
   viz: null,
   pane: "plan",
+  selectedByGroup: {},
+  sqlByDemo: {},
 };
 
 // ---------- small helpers ----------
@@ -81,7 +84,10 @@ async function getJson(path, options, retries = 0) {
   let data = null;
   try { data = text ? JSON.parse(text) : null; } catch (error) { data = { raw: text }; }
   if (!response.ok) {
-    const message = data && data.error ? data.error.message : `HTTP ${response.status}`;
+    const detail = data && data.error;
+    const message = detail && detail.message
+      ? `${detail.type ? `${detail.type}: ` : ""}${detail.message}`
+      : `HTTP ${response.status}`;
     const error = new Error(message);
     error.status = response.status;
     throw error;
@@ -89,13 +95,31 @@ async function getJson(path, options, retries = 0) {
   return data;
 }
 
-function highlightSql(sql) {
-  const escaped = sql.replace(/&/g, "&amp;").replace(/</g, "&lt;");
-  return escaped
-    .replace(/('(?:[^'\\]|\\.)*')/g, '<span class="str">$1</span>')
-    .replace(/\b(SELECT|FROM|WHERE|JOIN|ON|AND|AS|AI\.IF|AI\.SCORE|PROMPT|CROSS)\b/g,
-      '<span class="kw">$1</span>')
-    .replace(/(\s)(\d+\.\d+)/g, '$1<span class="num">$2</span>');
+function clearQueryError() {
+  const node = $("query-error");
+  node.hidden = true;
+  node.textContent = "";
+}
+
+function showQueryError(message, error = null) {
+  const node = $("query-error");
+  const detail = readableQueryError(error);
+  node.textContent = detail ? `${message} ${detail}` : message;
+  node.hidden = false;
+}
+
+function readableQueryError(error) {
+  if (!error || !error.message) return "";
+  let message = error.message.trim()
+    .replace(/^InvalidRequestError:\s*/, "")
+    .replace(/^CompileError:\s*/, "");
+  const unknownTable = message.match(
+    /^unknown provider '([^']+)'; registered: \[(.*)\]$/);
+  if (unknownTable) {
+    const available = unknownTable[2].replaceAll("'", "");
+    return `The table "${unknownTable[1]}" is not available. Available tables: ${available}.`;
+  }
+  return message ? message[0].toUpperCase() + message.slice(1) : "";
 }
 
 function serverHost(model) {
@@ -114,6 +138,11 @@ async function init() {
   }
   $("run").onclick = run;
   $("cancel").onclick = cancel;
+  $("download").onclick = downloadResults;
+  $("sql").oninput = () => {
+    if (state.demo) state.sqlByDemo[state.demo.key] = $("sql").value;
+    clearQueryError();
+  };
   const wanted = location.hash.replace(/^#/, "");
   const first = state.config.demos.find((d) => d.key === wanted) || state.config.demos[0];
   await selectDemo(first.key);
@@ -122,12 +151,71 @@ async function init() {
 function buildNav() {
   const nav = $("nav");
   nav.replaceChildren();
-  let lastGroup = null;
-  for (const demo of state.config.demos) {
-    const button = el("button", { class: "tab", "data-key": demo.key, onclick: () => selectDemo(demo.key) }, demo.title);
-    if (lastGroup !== null && demo.group !== lastGroup) button.classList.add("tab-group");
-    lastGroup = demo.group;
+  const groups = [...new Set(state.config.demos.map((demo) => demo.group))];
+  for (const group of groups) {
+    const demos = demosInGroup(group);
+    const button = el("button", {
+      class: "tab",
+      "data-group": group,
+      role: "tab",
+      onclick: () => selectGroup(group),
+    }, groupLabel(demos));
     nav.append(button);
+  }
+}
+
+function demosInGroup(group) {
+  return state.config.demos.filter((demo) => demo.group === group);
+}
+
+function groupLabel(demos) {
+  const prefixes = demos.map((demo) => demo.title.split(", ")[0]);
+  if (prefixes.every((prefix) => prefix === prefixes[0])) return prefixes[0];
+  return demos[0].title;
+}
+
+function queryLabel(demo) {
+  const parts = demo.title.split(", ");
+  return parts.length > 1 ? parts.slice(1).join(", ") : demo.title;
+}
+
+function renderQueryNote(demo) {
+  const node = $("note");
+  const source = demo.hints && demo.hints.source;
+  if (!source) {
+    node.textContent = demo.note;
+    return;
+  }
+  node.replaceChildren(
+    document.createTextNode(`${source.intro} `),
+    el("a", { href: source.url, target: "_blank", rel: "noreferrer" }, source.label),
+    document.createTextNode(`${source.after || ""}. ${demo.note}`));
+}
+
+function selectGroup(group) {
+  const demos = demosInGroup(group);
+  const key = state.selectedByGroup[group] || demos[0].key;
+  return selectDemo(key);
+}
+
+function buildQueryNav(demo) {
+  const demos = demosInGroup(demo.group);
+  const nav = $("query-nav");
+  nav.replaceChildren();
+  nav.hidden = demos.length < 2;
+  $("demo-title").hidden = demos.length > 1;
+  if (demos.length < 2) return;
+
+  nav.setAttribute("aria-label", `${groupLabel(demos)} queries`);
+  for (const item of demos) {
+    const active = item.key === demo.key;
+    nav.append(el("button", {
+      class: `query-tab${active ? " active" : ""}`,
+      "data-key": item.key,
+      role: "tab",
+      "aria-selected": String(active),
+      onclick: () => selectDemo(item.key),
+    }, queryLabel(item)));
   }
 }
 
@@ -144,22 +232,30 @@ async function selectDemo(key) {
   if (state.run && !state.run.done) return;   // one query at a time
   const demo = state.config.demos.find((d) => d.key === key);
   state.demo = demo;
+  state.viz = null;
+  state.selectedByGroup[demo.group] = demo.key;
+  if (!(demo.key in state.sqlByDemo)) state.sqlByDemo[demo.key] = demo.sql;
   location.hash = key;
   for (const button of document.querySelectorAll(".tab")) {
-    button.classList.toggle("active", button.dataset.key === key);
+    const active = button.dataset.group === demo.group;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-selected", String(active));
   }
+  buildQueryNav(demo);
   $("demo-title").textContent = demo.title;
   $("model").textContent = demo.model;
-  $("sql").innerHTML = highlightSql(demo.sql);
-  $("note").textContent = demo.note;
+  $("sql").value = state.sqlByDemo[demo.key];
+  renderQueryNote(demo);
   $("endpoint").textContent = serverHost(demo.model);
   $("query-id").textContent = "";
   $("plan").textContent = "";
   $("events").replaceChildren();
   $("events-count").textContent = "";
   $("progress").textContent = "";
+  clearQueryError();
   setState("idle");
   $("timer").textContent = "0.0 s";
+  $("download").disabled = true;
   $("cancel").disabled = true;
   showPane("plan");
   renderCards(null, null);
@@ -168,6 +264,7 @@ async function selectDemo(key) {
     try {
       state.data[demo.group] = await getJson(`/data/${demo.group}`);
     } catch (error) {
+      if (state.demo !== demo) return;
       $("viz").replaceChildren(el("p", { class: "empty" },
         `The ${demo.group} data is not on the server yet: ${error.message}. ` +
         "Run `modal run -m playground.modal_app::prepare`."));
@@ -175,10 +272,11 @@ async function selectDemo(key) {
       return;
     }
   }
+  if (state.demo !== demo) return;
   $("run").disabled = !state.config.servers[demo.model];
   state.viz = makeViz(demo, state.data[demo.group]);
   state.viz.init($("viz"));
-  $("caption").textContent = state.viz.caption;
+  renderCards(null, null);
   checkServer(demo.model);
 }
 
@@ -235,29 +333,66 @@ function inputsFor(demo) {
 
 // ---------- running a query ----------
 
+function withCustomQueryLimit(sql) {
+  const statement = sql.replace(/;\s*$/, "").trimEnd();
+  const trailingLimit = /(\bLIMIT\s+)(ALL|\d+)(\s+OFFSET\s+\d+)?\s*$/i;
+  const match = statement.match(trailingLimit);
+  if (!match) return `${statement}\nLIMIT ${CUSTOM_QUERY_LIMIT}`;
+  const current = match[2].toUpperCase() === "ALL"
+    ? Infinity : Number.parseInt(match[2], 10);
+  if (current <= CUSTOM_QUERY_LIMIT) return statement;
+  return statement.replace(trailingLimit,
+    (_whole, prefix, _limit, offset = "") =>
+      `${prefix}${CUSTOM_QUERY_LIMIT}${offset}`);
+}
+
 async function run() {
   const demo = state.demo;
   if (state.run && !state.run.done) return;
+  const editorSql = $("sql").value.trim();
+  if (!editorSql) {
+    showQueryError("Enter a SQL query before clicking Run.");
+    $("sql").focus();
+    return;
+  }
+  clearQueryError();
+  const custom = editorSql !== demo.sql.trim();
+  const sql = custom ? withCustomQueryLimit(editorSql) : editorSql;
+  if (sql !== editorSql) {
+    $("sql").value = sql;
+    state.sqlByDemo[demo.key] = sql;
+  }
+  state.viz = custom ? new QueryResults() : makeViz(demo, state.data[demo.group]);
+  state.viz.init($("viz"));
   const started = performance.now();
   const run = { demo, model: demo.model, id: null, revision: 0, seen: 0, done: false,
-    started, phase: null, events: [], status: null, cancelled: false };
+    sql, custom, started, phase: null, events: [], status: null, cancelled: false };
   state.run = run;
   state.viz.reset();
   renderCards(null, null);
   $("run").disabled = true;
+  $("download").disabled = true;
   $("cancel").disabled = false;
+  $("sql").disabled = true;
   $("events").replaceChildren();
   $("events-count").textContent = "";
   $("plan").textContent = "";
   $("progress").textContent = "";
   setState("queued");
   logEvent(run, "submitting the query");
+  let lastCardSecond = -1;
   const timer = setInterval(() => {
-    $("timer").textContent = `${((performance.now() - started) / 1000).toFixed(1)} s`;
+    const elapsed = (performance.now() - started) / 1000;
+    $("timer").textContent = `${elapsed.toFixed(1)} s`;
+    const cardSecond = Math.floor(elapsed);
+    if (state.run === run && cardSecond !== lastCardSecond) {
+      lastCardSecond = cardSecond;
+      renderCards(run, run.metrics || null);
+    }
   }, 100);
   try {
     const body = {
-      sql: demo.sql, dialect: demo.dialect, order: null,
+      sql, dialect: demo.dialect, order: null,
       config: { model: demo.model, device: state.config.device, gpus: 1, backend: "quail" },
       inputs: inputsFor(demo), session_id: "playground", timeout_s: demo.timeout_s,
     };
@@ -267,6 +402,8 @@ async function run() {
     run.id = status.id;
     $("query-id").textContent = `→ ${status.id}`;
     applyStatus(run, status);
+    run.computing = true;
+    run.metricsTask = finishMetrics(run, state.viz);
     while (!run.done) {
       const newer = await getJson(
         `/s/${demo.model}/v1/queries/${run.id}?after=${run.revision}&wait=${POLL_WAIT_S}`,
@@ -281,11 +418,17 @@ async function run() {
     setState("failed");
     logEvent(run, `error: ${error.message}`);
     $("progress").textContent = error.message;
+    showQueryError(
+      run.id ? "The query stopped before it finished." : "The query could not be submitted.",
+      error);
   } finally {
     clearInterval(timer);
     $("timer").textContent = `${((performance.now() - started) / 1000).toFixed(1)} s`;
-    $("run").disabled = false;
-    $("cancel").disabled = true;
+    if (state.run === run) {
+      $("run").disabled = false;
+      $("cancel").disabled = true;
+      $("sql").disabled = false;
+    }
   }
 }
 
@@ -301,9 +444,40 @@ async function cancel() {
   }
 }
 
+async function downloadResults() {
+  const run = state.run;
+  if (!run || !run.id || !run.status || run.status.state !== "succeeded") return;
+  const button = $("download");
+  button.disabled = true;
+  clearQueryError();
+  try {
+    const response = await fetch(`/downloads/${run.model}/${run.id}`);
+    if (!response.ok) {
+      const data = await response.json().catch(() => null);
+      throw new Error(data && data.error ? data.error.message : `HTTP ${response.status}`);
+    }
+    const url = URL.createObjectURL(await response.blob());
+    const link = el("a", {
+      href: url,
+      download: `${run.demo.key}-${run.id}.csv`,
+    });
+    document.body.append(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+  } catch (error) {
+    showQueryError("The results could not be downloaded.", error);
+  } finally {
+    button.disabled = state.run !== run || run.status.state !== "succeeded";
+  }
+}
+
 function applyStatus(run, status) {
   run.status = status;
   run.revision = status.revision;
+  if (status.state === "running" && run.executionStarted === undefined) {
+    run.executionStarted = performance.now();
+  }
   setState(status.state);
   const phase = status.phase ? status.phase.name : null;
   if (phase && phase !== run.phase) {
@@ -327,6 +501,8 @@ function applyStatus(run, status) {
   if (status.error) {
     logEvent(run, `${status.error.type}: ${status.error.message}`);
     $("progress").textContent = `${status.error.type}: ${status.error.message}`;
+    showQueryError("The query failed.", new Error(
+      `${status.error.type}: ${status.error.message}`));
   }
 }
 
@@ -334,7 +510,7 @@ function logEvent(run, text, quiet) {
   const seconds = ((performance.now() - run.started) / 1000).toFixed(1);
   run.events.push(text);
   const list = $("events");
-  const item = el("li", {}, el("b", {}, `${seconds} s`), ` · ${text}`);
+  const item = el("li", {}, el("b", {}, `${seconds} s:`), ` ${text}`);
   list.append(item);
   if (list.children.length > 400) list.firstChild.remove();
   if (!quiet || state.pane === "events") list.scrollTop = list.scrollHeight;
@@ -351,7 +527,7 @@ async function drainAnswers(run) {
     if (!page.answers.length) break;
     run.seen = page.next;
     state.viz.onAnswers(page.answers);
-    renderCards(run, null);
+    renderCards(run, run.metrics || null);
     if (page.answers.length < ANSWERS_PAGE) break;
   }
 }
@@ -360,36 +536,65 @@ async function finish(run) {
   const status = run.status;
   if (status.state !== "succeeded") {
     logEvent(run, `ended ${status.state}`);
+    if (status.state !== "cancelled" && !status.error) {
+      showQueryError(
+        `The query ended with status "${status.state}". Open Events for more details.`);
+    }
     return;
   }
+  const viz = state.viz;
+  if (state.run === run) $("download").disabled = false;
   logEvent(run, `succeeded: ${fmtInt(status.result.rows)} output rows`);
+  renderCards(run, run.metrics || null);
+  if (state.run === run && state.viz === viz) {
+    $("progress").textContent = "loading results";
+  }
+  await viz.onFinished(run, null);
+  if (state.run === run && state.viz === viz) {
+    renderCards(run, run.metrics || null);
+    $("progress").textContent = run.metrics && run.metrics.complete
+      ? "metrics ready" : "computing metrics";
+  }
+}
+
+async function finishMetrics(run, viz) {
   let metrics = null;
   try {
-    run.computing = true;
-    renderCards(run, null);
     // the page computes the numbers on a thread; 202 means not yet
     const started = performance.now();
     while (performance.now() - started < METRICS_LIMIT_MS) {
       const response = await fetch(`/metrics/${run.model}/${run.id}?demo=${run.demo.key}`);
       if (response.status === 202) {
+        const data = await response.json();
+        if (data.metrics) {
+          metrics = data.metrics;
+          run.metrics = metrics;
+          if (state.run === run && state.viz === viz) renderCards(run, metrics);
+        }
         await new Promise((resolve) => setTimeout(resolve, 2000));
         continue;
       }
       const data = await response.json();
       if (!response.ok) throw new Error(data.error ? data.error.message : `HTTP ${response.status}`);
       metrics = data;
+      run.metrics = metrics;
       break;
     }
     if (!metrics) throw new Error("the metrics did not finish in time");
-    logEvent(run, `metrics: ${fmtInt(metrics.input_tokens)} requested input tokens, ` +
-      `${fmtInt(metrics.fresh_tokens)} fresh, minimum ${fmtInt(metrics.minimum_tokens)}`);
+    if (state.run === run && state.viz === viz) {
+      logEvent(run, `metrics: ${fmtInt(metrics.input_tokens)} requested input tokens, ` +
+        `${fmtInt(metrics.fresh_tokens)} fresh, minimum ${fmtInt(metrics.minimum_tokens)}`);
+      $("progress").textContent = "metrics ready";
+    }
   } catch (error) {
-    logEvent(run, `metrics unavailable: ${error.message}`);
+    if (state.run === run && state.viz === viz) {
+      logEvent(run, `metrics unavailable: ${error.message}`);
+      $("progress").textContent = "metrics unavailable";
+    }
+  } finally {
+    run.computing = false;
+    if (state.run === run && state.viz === viz) renderCards(run, metrics);
   }
-  // the cards first: a view may still fetch the saved join tables
-  renderCards(run, metrics);
-  await state.viz.onFinished(run, metrics);
-  renderCards(run, metrics);
 }
 
 // ---------- metric cards ----------
@@ -407,38 +612,56 @@ function renderCards(run, metrics) {
   const live = state.viz ? state.viz.counts() : {};
   const m = metrics || {};
   // while the page computes the numbers of a finished query, the cards say so
-  const waiting = run && run.computing && !metrics ? "computing…" : "—";
+  const waiting = run && run.computing && (!metrics || metrics.complete === false)
+    ? (run.status && DONE.has(run.status.state) ? "computing…" : "running…") : "—";
+  const liveWall = run && run.executionStarted !== undefined
+    ? (performance.now() - run.executionStarted) / 1000 : null;
+  const wall = metrics && m.wall_s !== undefined ? m.wall_s : liveWall;
+  const cost = metrics && m.gpu_cost_usd !== undefined
+    ? m.gpu_cost_usd : (liveWall === null ? null : liveWall / 3600 * price);
   const cards = [];
   const outputLabel = state.viz ? state.viz.outputLabel : "output rows";
   const outputValue = run && run.status && run.status.result
     ? fmtInt(run.status.result.rows) : (live.output === undefined ? "—" : fmtInt(live.output));
   if (demo.view === "compaction") {
     const v = (value) => (value === undefined || value === null || value === "—") ? waiting : value;
-    cards.push(card(v(metrics ? fmtSeconds(m.wall_s) : null), "query time on the GPU",
-      "excluding model startup", !metrics));
-    cards.push(card(v(metrics ? fmtUsd(m.gpu_cost_usd) : null), "GPU cost", `one H100 at $${price}/h`, !metrics));
+    const regret = metrics && m.regret_tokens === null && m.complete
+      ? "not measured" : (metrics ? fmtCompact(m.regret_tokens) : null);
+    cards.push(card(v(wall === null ? null : fmtSeconds(wall)), "query time on the GPU",
+      "excluding model startup", false));
+    cards.push(card(v(cost === null ? null : fmtUsd(cost)), "GPU cost", `one H100 at $${price}/h`, false));
     cards.push(card(v(metrics ? fmtCompact(m.input_tokens) : null), "requested input tokens",
       m.tokens_per_second ? `${fmtInt(m.tokens_per_second)} tokens/second` : "", !metrics));
     cards.push(card(v(metrics ? fmtCompact(m.fresh_tokens) : null), "fresh input tokens computed",
-      m.kv_read_tokens !== undefined && m.kv_read_tokens !== null ? `${fmtCompact(m.kv_read_tokens)} read from KV` : "", !metrics));
-    cards.push(card(v(metrics ? (m.regret_tokens === null ? "not measured" : fmtCompact(m.regret_tokens)) : null),
-      "KV regret", "recomputed prefix tokens", !metrics));
+      "", !metrics));
+    cards.push(card(v(regret), "avoidable computation (KV regret)",
+      "",
+      !metrics || m.complete === false));
     cards.push(card(live.before !== undefined ? `${fmtCompact(live.before)} → ${fmtCompact(live.after)}` : "—",
       "tool output tokens before → after",
       live.before ? `${pct(live.before - live.after, live.before)} removed` : "", false));
   } else {
     const v = (value) => (value === undefined || value === null || value === "—") ? waiting : value;
-    cards.push(card(v(metrics && m.tokens_per_second ? fmtInt(m.tokens_per_second) : null), "tokens/second",
-      m.input_tokens ? `${fmtCompact(m.input_tokens)} requested input tokens` : "", !metrics));
-    cards.push(card(v(metrics ? fmtCompact(m.fresh_tokens) : null), "fresh input tokens computed", "", !metrics));
+    const regret = metrics && m.regret_tokens === null && m.complete
+      ? "not measured" : (metrics ? fmtCompact(m.regret_tokens) : null);
+    cards.push(card(v(wall === null ? null : fmtSeconds(wall)), "query time on the GPU",
+      m.tokens_per_second ? `${fmtInt(m.tokens_per_second)} requested tokens/second` : "excluding model startup",
+      false));
+    cards.push(card(v(metrics ? fmtCompact(m.input_tokens) : null), "requested input tokens",
+      m.kv_read_tokens !== undefined && m.kv_read_tokens !== null && m.fresh_tokens !== undefined
+        ? `${fmtCompact(m.kv_read_tokens)} from KV + ${fmtCompact(m.fresh_tokens)} fresh` : "",
+      !metrics));
     cards.push(card(v(metrics ? fmtCompact(m.kv_read_tokens) : null), "tokens read from KV",
       m.kv_read_tokens && m.input_tokens ? `${pct(m.kv_read_tokens, m.input_tokens)} of the requested input` : "",
       !metrics));
-    cards.push(card(v(metrics ? (m.regret_tokens === null ? "not measured" : fmtCompact(m.regret_tokens)) : null),
-      "KV regret",
-      m.minimum_tokens ? `minimum ${fmtCompact(m.minimum_tokens)} with unlimited KV` : "", !metrics));
-    cards.push(card(v(metrics ? fmtUsd(m.gpu_cost_usd) : null), "GPU cost",
-      m.wall_s ? `${fmtSeconds(m.wall_s)} on one H100 at $${price}/h` : `one H100 at $${price}/h`, !metrics));
+    cards.push(card(v(metrics ? fmtCompact(m.fresh_tokens) : null), "fresh input tokens computed",
+      "",
+      !metrics));
+    cards.push(card(v(regret), "avoidable computation (KV regret)",
+      "",
+      !metrics || m.complete === false));
+    cards.push(card(v(cost === null ? null : fmtUsd(cost)), "GPU cost",
+      `one H100 at $${price}/h`, false));
     cards.push(card(outputValue, outputLabel, "", false));
   }
   $("cards").replaceChildren(...cards);
@@ -452,6 +675,77 @@ function makeViz(demo, data) {
   return new Trajectories(demo, data);
 }
 
+class QueryResults {
+  constructor() {
+    this.outputLabel = "output rows";
+    this.reset();
+  }
+
+  reset() {
+    this.result = null;
+    this.error = null;
+    if (this.container) this.render();
+  }
+
+  init(container) {
+    this.container = container;
+    this.render();
+  }
+
+  onProgress() {}
+
+  onAnswers() {}
+
+  async onFinished(run) {
+    try {
+      this.result = await getJson(`/results/${run.model}/${run.id}`);
+    } catch (error) {
+      this.error = error;
+    }
+    this.render();
+  }
+
+  counts() {
+    return { output: this.result ? this.result.total_rows : undefined };
+  }
+
+  render() {
+    if (!this.container) return;
+    if (this.error) {
+      this.container.replaceChildren(el("p", { class: "query-error" },
+        `The query finished, but its rows could not be loaded. ${this.error.message}`));
+      return;
+    }
+    if (!this.result) {
+      this.container.replaceChildren(el("p", { class: "empty" },
+        "Run the custom query to see its result rows."));
+      return;
+    }
+    if (!this.result.rows.length) {
+      this.container.replaceChildren(el("p", { class: "empty" },
+        "The query succeeded and returned no rows."));
+      return;
+    }
+    const head = el("tr", {}, ...this.result.columns.map(
+      (column) => el("th", {}, column)));
+    const body = this.result.rows.map((row) => el("tr", {},
+      ...this.result.columns.map((column) => el("td", {}, formatCell(row[column])))));
+    const note = this.result.truncated
+      ? `Showing the first ${fmtInt(this.result.rows.length)} of ${fmtInt(this.result.total_rows)} rows.`
+      : `${fmtInt(this.result.total_rows)} rows returned.`;
+    this.container.replaceChildren(
+      el("p", { class: "result-note" }, note),
+      el("div", { class: "result-wrap" },
+        el("table", { class: "result-table" }, el("thead", {}, head), el("tbody", {}, ...body))));
+  }
+}
+
+function formatCell(value) {
+  if (value === null || value === undefined) return "NULL";
+  if (typeof value === "object") return JSON.stringify(value);
+  return String(value);
+}
+
 // One cell per review: 5,000 labeled negative, then 5,000 positive.
 class ReviewGrid {
   constructor(demo, data) {
@@ -462,13 +756,6 @@ class ReviewGrid {
     this.score = demo.view === "score";
     this.stages = (demo.hints && demo.hints.stages) || ["question 1", "question 2"];
     this.outputLabel = this.score ? "positive reviews" : "passed both";
-    this.caption = this.score
-      ? "One cell per review, 5,000 labeled negative on top, then 5,000 labeled positive. " +
-        "The reranker scores each review once; the question in front of the review is computed " +
-        "on the first review and read from KV for every later one. A score of 0.5 or more is positive."
-      : "One cell per review, 5,000 labeled negative on top, then 5,000 labeled positive. " +
-        "The first question is asked of every review; the second only of the reviews that passed " +
-        "it, and that second question reads the review from KV instead of computing it again.";
     this.reset();
   }
 
@@ -499,7 +786,6 @@ class ReviewGrid {
       el("div", { class: "legend" }, ...legend, this.countsNode),
       el("div", { class: "grid-layout" },
         el("div", { class: "grid-rows" },
-          el("div", { class: "grid-rowlabel" }, el("span", {}, "negative"), el("span", {}, "positive")),
           this.canvas),
         el("div", {},
           el("p", { class: "stream-title" },
@@ -584,9 +870,9 @@ class ReviewGrid {
     this.list.replaceChildren(...latest.map((row) => {
       const review = this.reviews[row];
       const label = review.label ? "labeled positive" : "labeled negative";
-      const extra = this.score ? ` · score ${this.scores[row].toFixed(2)}` : "";
+      const extra = this.score ? `, score ${this.scores[row].toFixed(2)}` : "";
       return el("div", { class: "doc" + (review.label ? "" : " neg") },
-        el("div", { class: "doc-head" }, `${review.id} · ${label}${extra}`),
+        el("div", { class: "doc-head" }, `${review.id}, ${label}${extra}`),
         el("div", { class: "doc-text" }, review.head));
     }));
   }
@@ -594,9 +880,9 @@ class ReviewGrid {
   renderCounts() {
     const total = this.reviews.length;
     this.countsNode.textContent = this.score
-      ? `${fmtCompact(this.passed)} positive · ${fmtCompact(this.finished - this.passed)} negative · ` +
+      ? `${fmtCompact(this.passed)} positive, ${fmtCompact(this.finished - this.passed)} negative, ` +
         `${fmtCompact(this.finished)} / ${fmtCompact(total)} scored`
-      : `${fmtCompact(this.passed)} passed both · ${fmtCompact(this.passedFirst)} passed "${this.stages[0]}" · ` +
+      : `${fmtCompact(this.passed)} passed both, ${fmtCompact(this.passedFirst)} passed "${this.stages[0]}", ` +
         `${fmtCompact(this.finished)} / ${fmtCompact(total)} finished`;
   }
 }
@@ -612,13 +898,6 @@ class ReportMatrix {
     this.joinLabels = (demo.hints && demo.hints.joins) || { n: "neurological", c: "cardiovascular" };
     this.filterLabels = (demo.hints && demo.hints.filters) || {};
     this.outputLabel = "output rows (report, term, term)";
-    this.caption = "Rows are reports, columns are reaction terms. The three filters color the headers: " +
-      "a serious report keeps its row, a neurological term is blue, a cardiovascular term is orange. " +
-      "Each dot is a report-term pair the model answered true, blue for the neurological join and " +
-      "orange for the cardiovascular one. The report is the anchor of both joins, so its KV is kept " +
-      "between them when it fits; the strip on the left shows a report's prefix in KV, evicted, or " +
-      "computed again. KV regret counts those recomputed tokens after the run. Only the last join " +
-      "streams its answers while the query runs; the other join fills in from the saved answer table.";
     this.reset();
   }
 
@@ -656,12 +935,12 @@ class ReportMatrix {
     this.resultsTitle = el("div", { class: "results-title" });
     container.replaceChildren(
       el("div", { class: "stages" },
-        stage("reports", `reports · ${this.filterLabels.r || "serious"}`),
-        stage("neuro", `terms · ${this.filterLabels.n || "neurological"}`),
-        stage("cardio", `terms · ${this.filterLabels.c || "cardiovascular"}`),
+        stage("reports", `${this.filterLabels.r || "serious"} reports`),
+        stage("neuro", `${this.filterLabels.n || "neurological"} terms`),
+        stage("cardio", `${this.filterLabels.c || "cardiovascular"} terms`),
         stage("pairs", "report × term pairs asked"),
         stage("matches", "pairs answered true"),
-        stage("kv", "report prefixes in KV · evicted · computed again")),
+        stage("kv", "report prefixes in KV, evicted, computed again")),
       el("div", { class: "legend" },
         el("span", {}, el("span", { class: "swatch", style: "background:#2f6fb3" }), `${this.joinLabels.n} match`),
         el("span", {}, el("span", { class: "swatch", style: "background:#d9822b" }), `${this.joinLabels.c} match`),
@@ -670,12 +949,9 @@ class ReportMatrix {
         el("span", {}, el("span", { class: "swatch", style: "background:#2a2828" }), "prefix in KV"),
         el("span", {}, el("span", { class: "swatch", style: "background:#d2d2d2" }), "evicted"),
         el("span", {}, el("span", { class: "swatch", style: "background:#c31331" }), "computed again")),
-      this.canvas,
-      el("p", { class: "matrix-note" },
-        `${fmtInt(R)} reports down, ${fmtInt(T)} terms across · top strip: the term filters ` +
-        "(blue neurological, orange cardiovascular, purple both, gray neither) · left strips: " +
-        "the serious filter, then the report prefix's KV state"),
-      this.resultsTitle, this.results);
+      el("div", { class: "matrix-layout" },
+        this.canvas,
+        el("div", { class: "matrix-results" }, this.resultsTitle, this.results)));
     this.drawAll();
     this.renderStages();
     this.renderResults();
@@ -813,20 +1089,23 @@ class ReportMatrix {
     this.stageNodes.cardio.textContent = `${fmtInt(c.cardio)} of ${fmtInt(T)} passed`;
     this.stageNodes.pairs.textContent = fmtCompact(this.pairsFromTables || c.pairsAsked);
     this.stageNodes.matches.textContent = fmtInt(c.matches);
-    this.stageNodes.kv.textContent = `${fmtInt(c.inKv)} · ${fmtInt(c.evicted)} · ` +
+    this.stageNodes.kv.textContent = `${fmtInt(c.inKv)}, ${fmtInt(c.evicted)}, ` +
       `${fmtInt(c.recomputed ? [...this.kv].filter((k) => k === 3).length : 0)} (${fmtCompact(c.recomputed)} tokens)`;
     for (const node of document.querySelectorAll(".stage")) node.classList.remove("hot");
   }
 
   renderResults() {
     const rows = [...this.matchesFor.entries()].filter(([, sets]) => sets.n.size && sets.c.size);
-    this.resultsTitle.replaceChildren(
-      "serious reports with a neurological and a cardiovascular reaction ",
-      el("span", { class: "mono" }, `${rows.length} reports · every (report, neurological term, cardiovascular term) triple is one output row · first 25 shown`));
     if (!rows.length) {
-      this.results.replaceChildren(el("p", { class: "empty" }, "no report has matched both joins yet"));
+      this.resultsTitle.textContent = "Matching reports";
+      this.results.replaceChildren(el("p", { class: "empty" }, "No matching reports yet."));
       return;
     }
+    const title = [`Matching reports (${fmtInt(rows.length)})`];
+    if (rows.length > 25) {
+      title.push(el("span", { class: "mono" }, ", first 25 shown"));
+    }
+    this.resultsTitle.replaceChildren(...title);
     const term = (t) => this.terms[t].term;
     const SHOWN = 8;
     const list = (set) => {
@@ -854,12 +1133,6 @@ class Trajectories {
     this.conversations = data.conversations;
     this.questions = data.questions;      // question row -> [conversation row, call id, kind]
     this.outputLabel = "questions answered true";
-    this.caption = "Each line is one recorded OpenHands trajectory; each box is one tool call, " +
-      "as wide as its output in tokens. The conversation's compaction state is the anchor of the " +
-      "join, so all of its retention questions read it from KV. A result kept verbatim is dark red, " +
-      "a call kept with its output cut to 300 characters is light red, a dropped call is gray, and " +
-      "the first message and the last six calls are pinned (black) without asking. Token counts use " +
-      "the reference library's estimate, not the model tokenizer.";
     this.reset();
   }
 
@@ -899,7 +1172,8 @@ class Trajectories {
         el("span", {}, el("span", { class: "swatch", style: "background:#f6d3da" }), "truncate to 300 chars"),
         el("span", {}, el("span", { class: "swatch", style: "background:#ececec" }), "drop"),
         el("span", {}, el("span", { class: "swatch", style: "background:#2a2828" }), "pinned: first message and last 6 calls"),
-        el("span", {}, "box width = tool output tokens · gray line = length before"),
+        el("span", {}, "box width = tool output tokens"),
+        el("span", {}, "gray line = length before"),
         this.countsNode),
       el("div", { class: "traj-cols" }, ...columns));
     this.renderAll();
@@ -983,7 +1257,7 @@ class Trajectories {
       box.style.left = `${left.toFixed(2)}%`;
       box.style.width = `${width.toFixed(2)}%`;
       box.style.opacity = width > 0 ? "1" : "0";
-      if (decision) box.title = `${call.id} ${call.tool}: ${fmtInt(call.tokens)} tokens · ${decision}`;
+      if (decision) box.title = `${call.id} ${call.tool}: ${fmtInt(call.tokens)} tokens, ${decision}`;
       left += width > 0 ? width + 0.15 : 0;
     });
     if (decisions) {
@@ -991,13 +1265,13 @@ class Trajectories {
       after.replaceChildren(`${fmtCompact(conversation.tokens)} → ${fmtCompact(kept)} `,
         el("b", {}, `−${pct(conversation.tokens - kept, conversation.tokens)}`));
     } else {
-      after.textContent = `${fmtCompact(conversation.tokens)} tokens · ${conversation.calls.length} calls`;
+      after.textContent = `${fmtCompact(conversation.tokens)} tokens, ${conversation.calls.length} calls`;
     }
   }
 
   renderCounts() {
     const { before, after } = this.counts();
-    this.countsNode.textContent = `${this.answered} / ${this.conversations.length} answered · ` +
+    this.countsNode.textContent = `${this.answered} / ${this.conversations.length} answered, ` +
       `${fmtCompact(before)} → ${fmtCompact(after)} tokens (−${pct(before - after, before)})`;
   }
 }

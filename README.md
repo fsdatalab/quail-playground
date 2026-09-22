@@ -1,138 +1,85 @@
-# Quail playground
+# Quail Playground
 
-A web page for demoing [Quail](https://github.com/fsdatalab/quail): four
-AI-SQL queries, each running on Quail Server on its own H100 on Modal,
-with the answers drawn as they arrive.
+Quail Playground is a live demo of
+[Quail](https://github.com/fsdatalab/quail), an AI query engine. Choose a
+query, click **Run**, and watch the results arrive as Quail runs the query on
+Modal.
 
-| Query | Model | Data |
-| --- | --- | --- |
-| IMDB · sentiment (`AI.SCORE`) | qwen3-reranker-0.6b-bf16 | 10,000 IMDB reviews: 5,000 labeled negative, then 5,000 positive |
-| IMDB · ending + recommends (two `AI.IF` filters) | qwen3-4b-fp8 | the same 10,000 reviews |
-| BIO-4 (three filters, two joins on one anchor) | qwen3-4b-fp8 | the quail-bench BIO tables at scale factor 0.1: 500 reports, 1,127 terms |
-| Agent trace compaction (one join, the conversation as anchor) | diffusion-gemma-26b-a4b-fp8 | 100 OpenHands trajectories, 6,554 retention questions |
+The page reports query time, input tokens per second, fresh input tokens,
+tokens read from KV, KV regret, GPU cost, and result count.
 
-For every query the page shows tokens/second, fresh input tokens,
-tokens read from KV, KV regret, and GPU cost, with the definitions
-Quail's reports use. KV regret and requested input tokens are computed
-by quail-bench (`quail_b.minimum.token_metrics`) from the saved answer
-tables after the run; nothing is tracked in the engine loop.
+## Run the playground
 
-## How it is put together
+You need:
 
-```mermaid
-flowchart LR
-  B[browser] -->|/config, /data, /metrics| P[page · CPU function]
-  B -->|/s/model/v1/...| P
-  P -->|bearer token added| Q1[Quail Server · qwen3-4b-fp8 · H100]
-  P --> Q2[Quail Server · qwen3-reranker-0.6b · H100]
-  P --> Q3[Quail Server · diffusion-gemma-26b · H100]
-  V[(quail-results Volume)] --- Q1 & Q2 & Q3
-```
+- Python 3.12
+- [uv](https://docs.astral.sh/uv/)
+- A [Modal](https://modal.com/) account with H100 access
+- A Modal secret named `quail-service-token`
 
-- The three GPU containers run quail-server as shipped
-  (`quail.server.app.create_app`), one model each. A container boots
-  its model with a tiny warm-up query before it serves, so the first
-  Run pays no boot, and stays up 15 minutes after its last request
-  (`playground/servers.py`, `playground/modal_app.py`). There is no
-  memory snapshot: booting from the cached weights takes 12 to 50
-  seconds, and restoring a GPU snapshot of the KV arena took longer.
-- The page is a small Starlette app on a CPU container of the same
-  image. It serves the static files, forwards `/s/<model>/v1/...` to
-  that model's server with the bearer token added, and computes the
-  token numbers of a finished query (`playground/web.py`,
-  `playground/regret.py`).
-- The input tables are built by `playground/prepare.py` while the
-  image builds. Each server registers the tables its queries read when
-  it starts, exactly as an upload would land, so Run only submits.
+The secret must contain:
 
-## Deploy
+- `QUAIL_SERVER_TOKEN`, which protects the model servers
+- `HF_TOKEN`, with access to DiffusionGemma on Hugging Face
 
-Run from the repository root. The images copy `pyproject.toml` and
-`uv.lock` from the working directory; `uv sync` inside the image
-installs `quail-engine` from the GitHub commit the lock pins.
+Install the dependencies and connect the Modal CLI:
 
 ```bash
 uv sync
-modal deploy playground/modal_app.py 2>&1 | tee deploy.log
+uv run modal setup
 ```
 
-The first deploy builds the one image, which includes building the
-demo data: it downloads IMDB, the quail-bench BIO corpus, and the
-sampled trajectories, tokenizes the reports, and writes the Arrow
-tables into the image. That takes a few minutes and happens once per
-change to `playground/`.
+You can skip `modal setup` if the CLI is already connected to your account.
 
-`modal deploy` prints four URLs: the page (`page`) and the three
-servers. Open the page; that is the whole demo. A server registers its
-demo tables when it starts, and Run submits the query.
-
-The servers' bearer token comes from the workspace's
-`quail-service-token` secret (`QUAIL_SERVER_TOKEN` or
-`QUAIL_SERVICE_TOKEN`). `HF_TOKEN` in the same secret is needed for
-DiffusionGemma's gated weights and tokenizer unless the
-`quail-hf-cache` Volume already holds them.
-
-A server's container starts on its first request and boots its model
-then. To have all three up before a demo:
+Deploy the playground:
 
 ```bash
-uv run python -m playground.warm https://<page url>
+uv run modal deploy playground/modal_app.py 2>&1 | tee deploy.log
 ```
 
-That sends one request to each server and waits for the answer; no
-Modal run is involved.
+The first deploy downloads and prepares the demo data. It can take several
+minutes. When the deploy finishes, Modal prints the playground page URL. Open
+that URL in your browser.
 
-Every deploy replaces the servers, so run this after deploying and
-before a demo.
-
-## During a demo
-
-Open the page, pick a query, press Run. Switching to a query pings its
-server, so a cold container restores while you talk; the header says
-when it is ready. Each server runs at most one container
-(`max_containers=1`), and so does the page. A server stays up for 15
-minutes after its last request (`SCALEDOWN_S` in
-`playground/modal_app.py`).
-
-The Modal app is `quail-playground`. It shares the `quail-results`,
-`quail-hf-cache`, and `quail-kernel-cache` Volumes with the quail
-repository's apps, so model weights and compiled kernels are warm on the
-first start. It is a separate app because `modal deploy` replaces every
-function of the app it deploys to, and the servers here must not
-replace `quail-engine`'s.
-
-## Run the page locally
-
-With a Quail Server running somewhere (for example `quail-server` on a
-GPU machine, or the deployed one with its token in
-`QUAIL_SERVER_TOKEN`) and the data built into a local directory:
+Warm the three model servers before a demo:
 
 ```bash
-uv run python -c "from pathlib import Path; from playground.prepare import build; build(Path('data'), ['imdb'])"
-uv run python -m playground.web --data-dir data --server qwen3-4b-fp8=http://127.0.0.1:8642
+uv run modal run playground/modal_app.py::warm 2>&1 | tee warm.log
 ```
 
-## Development
+The command finds the deployed model servers through Modal and starts them at
+the same time. A model server scales down after 15 minutes without a request,
+so run the command again before a scheduled demo.
+
+## Demo queries
+
+| Demo | Query | Data | Model |
+| --- | --- | --- | --- |
+| IMDB sentiment | Score whether each reviewer enjoyed and recommends the movie | 10,000 IMDB reviews | `qwen3-reranker-0.6b-bf16` |
+| IMDB ending and recommendation | Find reviews that discuss the ending and recommend the movie | 10,000 IMDB reviews | `qwen3-4b-fp8` |
+| BIO-4 | Find serious reports with both a neurological and a cardiovascular reaction | 500 reports and 1,127 reaction terms | `qwen3-4b-fp8` |
+| Agent trace compaction | Decide which tool calls and results to keep in a shorter agent trace | 100 OpenHands trajectories and 6,554 questions | `diffusion-gemma-26b-a4b-fp8` |
+
+## How it runs
+
+- The playground page runs in a CPU container on Modal.
+- Each model has its own Quail Server running on one H100.
+- The page sends the selected SQL query to the matching server.
+- Quail streams status updates and answer batches back to the page while the
+  query runs.
+- The page prepares its token cache while the query runs, then uses the final
+  report and saved answers to calculate the final metrics.
+- The bearer token stays in the CPU service. It is not sent to the browser.
+
+The deployment uses the Modal app `quail-playground`. It stores model files
+in `quail-hf-cache`, compiled GPU kernels in `quail-kernel-cache`, and
+query results in `quail-results`.
+
+## Test changes
+
+The tests use small tables and fake servers. They do not need a GPU.
 
 ```bash
 uv run ruff check playground tests tools
 uv run pytest -q
 ```
-
-The tests compile the four queries on a CPU session, check the
-quail-bench token counts on tiny tables, and exercise the page's routes
-against a fake server. Nothing here needs a GPU.
-
-`pyproject.toml` pins `quail-engine` and `quail-b` to commits. Every
-other package is constrained to the versions in quail's own `uv.lock`
-at that commit, so the GPU stack is the one quail tests. After moving
-the quail pin, refresh the constraints and the lock:
-
-```bash
-python tools/constraints_from_quail_lock.py ../quail/uv.lock
-uv lock
-```
-
-`playground/compaction.py` is copied from quail's
-`demos/agent_trace_compaction.py` (MIT), keeping the parts that build
-the compaction state and the retention questions.

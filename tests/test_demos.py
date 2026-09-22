@@ -21,6 +21,15 @@ def test_public_fields_carry_what_the_page_needs():
     assert public["model"] == demos.QWEN3_4B
     assert [table["name"] for table in public["tables"]] == ["reports", "terms"]
     assert public["hints"]["joins"] == {"n": "neurological", "c": "cardiovascular"}
+    sources = {item.key: item.public()["hints"]["source"]["url"]
+               for item in demos.DEMOS}
+    assert sources == {
+        "imdb-sentiment": "https://huggingface.co/datasets/stanfordnlp/imdb",
+        "imdb-ending": "https://huggingface.co/datasets/stanfordnlp/imdb",
+        "bio-4": "https://huggingface.co/datasets/BioDEX/BioDEX-Reactions",
+        "compaction": ("https://huggingface.co/datasets/nvidia/"
+                       "SWE-Zero-openhands-trajectories"),
+    }
     with pytest.raises(KeyError, match="unknown demo"):
         demos.demo("nope")
 

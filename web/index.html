@@ -14,9 +14,9 @@
 <header class="top">
   <div class="brand">
     <span class="brand-name">Quail playground</span>
-    <span class="brand-sub">Full Stack Data Lab · runs on Modal</span>
+    <span class="brand-sub">Full Stack Data Lab, runs on Modal</span>
   </div>
-  <nav id="nav" class="tabs" aria-label="Queries"></nav>
+  <nav id="nav" class="tabs" aria-label="Demo areas" role="tablist"></nav>
   <div class="top-right">
     <span id="server-state" class="server-state">—</span>
     <a href="https://github.com/fsdatalab/quail">Quail</a>
@@ -32,18 +32,24 @@
     <span class="spacer"></span>
     <span id="state" class="state idle">IDLE</span>
     <span id="timer" class="timer mono">0.0 s</span>
+    <button id="download" disabled>Download results</button>
     <button id="cancel" disabled>Cancel</button>
     <button id="run" class="primary">Run</button>
   </section>
+  <div id="query-error" class="query-error" role="alert" hidden></div>
 
   <section class="split">
     <div class="pane">
       <div class="pane-head">
         <span id="demo-title" class="pane-title">Query</span>
+        <nav id="query-nav" class="query-tabs" aria-label="Queries" role="tablist" hidden></nav>
         <span id="model" class="mono muted"></span>
       </div>
-      <pre id="sql" class="sql"></pre>
-      <p id="note" class="note"></p>
+      <textarea id="sql" class="sql" aria-label="SQL query" spellcheck="false"></textarea>
+      <p class="note">
+        <span><span class="note-label">Default query explanation:</span> <span id="note"></span></span>
+        <em class="query-limit-note">If you edit the query and enter no LIMIT, we will apply LIMIT 100, so the page returns at most 100 rows.</em>
+      </p>
     </div>
     <div class="pane">
       <div class="pane-head">
@@ -62,7 +68,6 @@
 
   <section id="viz" class="viz"></section>
 
-  <footer id="caption" class="caption"></footer>
 </main>
 <script src="/static/app.js"></script>
 </body>
