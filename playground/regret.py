@@ -174,7 +174,8 @@ def run_output(description: QueryDescription, report: dict,
 
 
 def token_numbers(description: QueryDescription, output: RunOutput,
-                  tables: dict, id_cols: dict, tokenizer=None) -> dict:
+                  tables: dict, id_cols: dict, tokenizer=None,
+                  documents: DocumentTokens | None = None) -> dict:
     """quail-bench's input, fresh, minimum, and regret token counts.
 
     Args:
@@ -184,6 +185,8 @@ def token_numbers(description: QueryDescription, output: RunOutput,
         id_cols: Table name -> its id column.
         tokenizer: Callable(list of texts) -> token id lists; the
             model's Hugging Face tokenizer when omitted.
+        documents: A reusable ``DocumentTokens`` store. When supplied,
+            documents already tokenized by an earlier query are reused.
     """
     corpus_rows = {}
     for relation in description.info.relations:
@@ -194,7 +197,9 @@ def token_numbers(description: QueryDescription, output: RunOutput,
                 ["id" if name == id_col else name for name in table.column_names])
         corpus_rows[relation.table] = table
     stores = None
-    if tokenizer is not None:
+    if documents is not None:
+        stores = {description.pieces["tokenizer"]: documents}
+    elif tokenizer is not None:
         stores = {description.pieces["tokenizer"]:
                   DocumentTokens(corpus_rows, tokenizer)}
     try:
@@ -214,21 +219,27 @@ def metrics(report: dict, numbers: dict, *, gpus: int,
     """Combine the report with the token counts into the page's numbers.
 
     Throughput divides requested input tokens by the query's wall time.
-    Tokens read from KV are the requested input tokens the engine did
-    not compute: requested minus fresh. Cost is wall time in hours times
-    the GPU count and hourly price; model startup is excluded, as the
-    wall time excludes it.
+    Tokens read from KV use the engine's cached token counter when it is
+    available, or requested minus fresh as a fallback. Before the slower
+    minimum calculation finishes, requested input tokens are fresh plus
+    cached. Cost is wall time in hours times the GPU count and hourly
+    price; model startup is excluded, as the wall time excludes it.
     """
     wall_s = float(report["wall_s"])
     requested = numbers.get("input_tokens")
     fresh = report.get("fresh_tokens")
-    kv_read = (requested - fresh if isinstance(requested, int)
+    cached = report.get("cached_tokens")
+    if (not isinstance(requested, int) and isinstance(fresh, int)
+            and isinstance(cached, int)):
+        requested = fresh + cached
+    kv_read = (cached if isinstance(cached, int) else
+               requested - fresh if isinstance(requested, int)
                and isinstance(fresh, int) else None)
     return {
         "wall_s": wall_s,
         "boot_s": report.get("boot_s"),
         "fresh_tokens": fresh,
-        "cached_tokens": report.get("cached_tokens"),
+        "cached_tokens": cached,
         "kv_read_tokens": kv_read,
         "input_tokens": requested,
         "minimum_tokens": numbers.get("minimum_tokens"),

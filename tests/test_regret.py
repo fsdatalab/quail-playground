@@ -131,3 +131,14 @@ def test_reranker_pieces_come_from_the_layout(tiny_tables):
     summary = regret.metrics({"wall_s": 1.0, "fresh_tokens": 5}, numbers,
                              gpus=1, usd_per_hour=1.0)
     assert summary["regret_tokens"] is None and summary["tokens_per_second"] is None
+
+
+def test_report_counters_are_available_before_regret_is_scored():
+    summary = regret.metrics(
+        {"wall_s": 2.0, "fresh_tokens": 5, "cached_tokens": 95}, {},
+        gpus=1, usd_per_hour=3.6)
+    assert summary["input_tokens"] == 100
+    assert summary["kv_read_tokens"] == 95
+    assert summary["tokens_per_second"] == 50
+    assert summary["minimum_tokens"] is None
+    assert summary["regret_tokens"] is None

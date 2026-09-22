@@ -76,7 +76,12 @@ def test_page_config_and_data(data_dir, monkeypatch):
     with TestClient(make_app(data_dir, seen, monkeypatch)) as client:
         page = client.get("/")
         assert page.status_code == 200 and "Quail playground" in page.text
-        assert client.get("/static/app.js").status_code == 200
+        assert "/static/app.js?v=" in page.text
+        assert "/static/style.css?v=" in page.text
+        assert page.headers["cache-control"] == "no-store"
+        static = client.get("/static/app.js")
+        assert static.status_code == 200
+        assert "immutable" in static.headers["cache-control"]
         assert client.get("/static/../pyproject.toml").status_code == 404
         config = client.get("/config").json()
         assert config["servers"] == {QWEN3_4B: "http://upstream",
@@ -112,10 +117,11 @@ class FakeServerClient:
     """What Metrics reads off a server: the status, files, and answers."""
 
     def __init__(self, status: QueryStatus = None, files: dict = None,
-                 answers=()):
+                 answers=(), result: pa.Table = None):
         self._status = status
         self._files = files or {}
         self._answers = list(answers)
+        self._result = result
 
     def status(self, query_id):
         return self._status
@@ -127,6 +133,9 @@ class FakeServerClient:
         page = self._answers[after:after + limit]
         return {"answers": page, "next": after + len(page), "done": True}
 
+    def result_batches(self, query_id):
+        return self._result.to_reader()
+
 
 def _ipc_bytes(table: pa.Table) -> bytes:
     sink = pa.BufferOutputStream()
@@ -135,10 +144,10 @@ def _ipc_bytes(table: pa.Table) -> bytes:
     return sink.getvalue().to_pybytes()
 
 
-def _status(state="succeeded", files=None, rows=2) -> QueryStatus:
+def _status(state="succeeded", files=None, rows=2, sql="...") -> QueryStatus:
     return QueryStatus(
         id="q1", state=state, revision=9, created_at=0.0, updated_at=1.0,
-        timeout_s=10.0, spec={"sql": "..."},
+        timeout_s=10.0, spec={"sql": sql},
         config={"model": QWEN3_4B, "device": "h100-sxm", "gpus": 1,
                 "backend": "quail"},
         inputs={}, result={"rows": rows, "columns": ["review_id"],
@@ -151,8 +160,12 @@ def _status(state="succeeded", files=None, rows=2) -> QueryStatus:
 def test_metrics_use_the_saved_answer_tables(data_dir, monkeypatch, tiny_tables):
     seen = []
     item = demo("imdb-ending")
+    custom_sql = item.sql.replace(
+        "SELECT r.review_id", "SELECT r.review_id AS selected_review")
+    described = []
 
     def describe(model, item, tables, anchors):
+        described.append(item.sql)
         session, query = compile_demo(item, tables)
         try:
             return regret.describe_query(query, anchors, fake_tok)
@@ -168,7 +181,7 @@ def test_metrics_use_the_saved_answer_tables(data_dir, monkeypatch, tiny_tables)
     files = {"report.json": json.dumps(report).encode(),
              "answers/filters/r--0.arrow": _ipc_bytes(filters),
              "answers/filters/r--1.arrow": _ipc_bytes(second)}
-    status = _status(files={"filters": [
+    status = _status(sql=custom_sql, files={"filters": [
         {"alias": "r", "position": 0, "file": "answers/filters/r--0.arrow"},
         {"alias": "r", "position": 1, "file": "answers/filters/r--1.arrow"}],
         "joins": []})
@@ -189,6 +202,7 @@ def test_metrics_use_the_saved_answer_tables(data_dir, monkeypatch, tiny_tables)
         assert result["tokens_per_second"] == result["input_tokens"] / 4.0
         assert result["gpu_cost_usd"] == pytest.approx(4.0 / 3600 * 3.0)
         assert result["output_rows"] == 2 and result["cached_tokens"] == 20
+        assert described == [custom_sql]
         # computed once; a second read is the remembered result
         fake._files = {}
         assert client.get(f"/metrics/{QWEN3_4B}/q1?demo={item.key}").json() == result
@@ -198,12 +212,50 @@ def test_metrics_use_the_saved_answer_tables(data_dir, monkeypatch, tiny_tables)
     monkeypatch.setattr(app.state.metrics, "_client", lambda model: unfinished)
     app.state.metrics._results.clear()
     with TestClient(app) as client:
-        for _ in range(200):
-            response = client.get(f"/metrics/{QWEN3_4B}/q2?demo={item.key}")
-            if response.status_code != 202:
-                break
-            time.sleep(0.05)
-        assert response.status_code == 409 and "running" in response.text
+        response = client.get(f"/metrics/{QWEN3_4B}/q2?demo={item.key}")
+        assert response.status_code == 202
+        assert response.json() == {"status": "computing", "metrics": None}
+
+
+def test_result_preview_returns_json_rows(data_dir, monkeypatch):
+    seen = []
+    app = make_app(data_dir, seen, monkeypatch)
+    result = pa.table({"review_id": ["r1", "r2", "r3"],
+                       "score": [0.2, 0.7, 0.9]})
+    fake = FakeServerClient(_status(rows=3), result=result)
+    monkeypatch.setattr(app.state.metrics, "_client", lambda model: fake)
+
+    with TestClient(app) as client:
+        response = client.get(f"/results/{QWEN3_4B}/q1")
+        assert response.status_code == 200
+        assert response.json() == {
+            "columns": ["review_id", "score"],
+            "rows": [
+                {"review_id": "r1", "score": 0.2},
+                {"review_id": "r2", "score": 0.7},
+                {"review_id": "r3", "score": 0.9},
+            ],
+            "total_rows": 3,
+            "truncated": False,
+        }
+
+
+def test_result_download_returns_complete_csv(data_dir, monkeypatch):
+    seen = []
+    app = make_app(data_dir, seen, monkeypatch)
+    result = pa.table({"review_id": ["r1", "r2", "r3"],
+                       "score": [0.2, 0.7, 0.9]})
+    fake = FakeServerClient(_status(rows=3), result=result)
+    monkeypatch.setattr(app.state.metrics, "_client", lambda model: fake)
+
+    with TestClient(app) as client:
+        response = client.get(f"/downloads/{QWEN3_4B}/q1")
+        assert response.status_code == 200
+        assert response.headers["content-type"].startswith("text/csv")
+        assert response.headers["content-disposition"] == (
+            'attachment; filename="quail-results.csv"')
+        assert response.text.splitlines() == [
+            '"review_id","score"', '"r1",0.2', '"r2",0.7', '"r3",0.9']
 
 
 def test_join_pairs_are_read_from_the_saved_tables(data_dir, monkeypatch):

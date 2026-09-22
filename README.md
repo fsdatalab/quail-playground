@@ -6,8 +6,8 @@ with the answers drawn as they arrive.
 
 | Query | Model | Data |
 | --- | --- | --- |
-| IMDB · sentiment (`AI.SCORE`) | qwen3-reranker-0.6b-bf16 | 10,000 IMDB reviews: 5,000 labeled negative, then 5,000 positive |
-| IMDB · ending + recommends (two `AI.IF` filters) | qwen3-4b-fp8 | the same 10,000 reviews |
+| IMDB, sentiment (`AI.SCORE`) | qwen3-reranker-0.6b-bf16 | 10,000 IMDB reviews: 5,000 labeled negative, then 5,000 positive |
+| IMDB, ending + recommends (two `AI.IF` filters) | qwen3-4b-fp8 | the same 10,000 reviews |
 | BIO-4 (three filters, two joins on one anchor) | qwen3-4b-fp8 | the quail-bench BIO tables at scale factor 0.1: 500 reports, 1,127 terms |
 | Agent trace compaction (one join, the conversation as anchor) | diffusion-gemma-26b-a4b-fp8 | 100 OpenHands trajectories, 6,554 retention questions |
 
@@ -21,11 +21,11 @@ tables after the run; nothing is tracked in the engine loop.
 
 ```mermaid
 flowchart LR
-  B[browser] -->|/config, /data, /metrics| P[page · CPU function]
+  B[browser] -->|/config, /data, /metrics| P[page, CPU function]
   B -->|/s/model/v1/...| P
-  P -->|bearer token added| Q1[Quail Server · qwen3-4b-fp8 · H100]
-  P --> Q2[Quail Server · qwen3-reranker-0.6b · H100]
-  P --> Q3[Quail Server · diffusion-gemma-26b · H100]
+  P -->|bearer token added| Q1[Quail Server, qwen3-4b-fp8, H100]
+  P --> Q2[Quail Server, qwen3-reranker-0.6b, H100]
+  P --> Q3[Quail Server, diffusion-gemma-26b, H100]
   V[(quail-results Volume)] --- Q1 & Q2 & Q3
 ```
 
@@ -76,7 +76,7 @@ A server's container starts on its first request and boots its model
 then. To have all three up before a demo:
 
 ```bash
-uv run python -m playground.warm https://<page url>
+uv run modal run playground/modal_app.py::warm 2>&1 | tee warm.log
 ```
 
 That sends one request to each server and waits for the answer; no

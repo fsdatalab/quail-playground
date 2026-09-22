@@ -276,8 +276,8 @@ def deployed_server_urls() -> dict:
     # servers' weights
     volumes={HF_CACHE_DIR: hf_cache},
     secrets=[secret],
-    cpu=2.0,
-    memory=4_096,
+    cpu=8.0,
+    memory=8_192,
     timeout=600,
     scaledown_window=SCALEDOWN_S,
     max_containers=1,
@@ -300,10 +300,7 @@ def page():
 def warm():
     """Start every server once, so each boots its model before a demo.
 
-    modal run playground/modal_app.py::warm
-
-    A plain request to each server does the same: ``python -m
-    playground.warm`` sends one, without starting a Modal run.
+    Run with ``modal run playground/modal_app.py::warm``.
     """
     from playground.warm import warm_servers
 

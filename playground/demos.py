@@ -44,6 +44,26 @@ NEUROLOGICAL_SELECTIVITY = round(505 / 1127, 4)
 CARDIOVASCULAR_SELECTIVITY = round(394 / 1127, 4)
 REACTION_SELECTIVITY = round(19144 / 563500, 4)
 
+IMDB_SOURCE = {
+    "intro": "Each row in the reviews table is a movie review from the",
+    "label": "IMDB dataset",
+    "url": "https://huggingface.co/datasets/stanfordnlp/imdb",
+}
+BIODEX_SOURCE = {
+    "intro": "Each row in the reports table is a medical report from the",
+    "label": "BioDEX Reactions dataset",
+    "url": "https://huggingface.co/datasets/BioDEX/BioDEX-Reactions",
+    "after": (", and each row in the terms table is a reaction name from "
+              "those reports"),
+}
+OPENHANDS_SOURCE = {
+    "intro": ("Each row in the conversations table is an agent trace from "
+              "the"),
+    "label": "NVIDIA SWE-Zero OpenHands trajectories dataset",
+    "url": ("https://huggingface.co/datasets/nvidia/"
+            "SWE-Zero-openhands-trajectories"),
+}
+
 IMDB_SENTIMENT_SQL = """\
 SELECT r.review_id
 FROM reviews AS r
@@ -165,45 +185,46 @@ TOOL_QUESTIONS = Table(
 DEMOS = (
     Demo(
         key="imdb-sentiment",
-        title="IMDB · sentiment",
+        title="IMDB, sentiment",
         group="imdb",
         model=RERANKER,
         sql=IMDB_SENTIMENT_SQL,
         tables=(REVIEWS,),
         view="score",
-        note=("One reranker score per review. The question comes before "
-              "the review, so its KV is computed once and read for every "
-              "later review. A score of 0.5 or more counts as yes."),
+        note=("The query scores whether each reviewer enjoyed the movie and "
+              "would recommend it. A score of 0.5 or higher counts as "
+              "positive."),
+        hints={"source": IMDB_SOURCE},
     ),
     Demo(
         key="imdb-ending",
-        title="IMDB · ending + recommends",
+        title="IMDB, ending and recommendations",
         group="imdb",
         model=QWEN3_4B,
         sql=IMDB_ENDING_SQL,
         tables=(REVIEWS,),
         view="filter",
-        note=("Two questions on each review. The second is asked only "
-              "when the first passes, and it reads the review from KV."),
-        hints={"stages": ["discusses the ending", "recommends the movie"]},
+        note=("The query finds reviews that discuss the movie's ending and "
+              "recommend watching the movie."),
+        hints={"stages": ["discusses the ending", "recommends the movie"],
+               "source": IMDB_SOURCE},
     ),
     Demo(
         key="bio-4",
-        title="BIO-4 · serious reports with two reactions",
+        title="BIO-4, serious reports with two reactions",
         group="bio",
         model=QWEN3_4B,
         sql=BIO4_SQL,
         tables=(REPORTS, TERMS),
         view="join",
-        note=("The report is the anchor of both joins. The corpus is the "
-              "quail-bench BIO tables at scale factor 0.1: more reports "
-              "than one H100 keeps in KV, so anchors are evicted and "
-              "computed again. Selectivity hints are the benchmark "
-              "estimates."),
+        note=("The query finds serious or life-threatening medical reports "
+              "that mention both a neurological reaction and a "
+              "cardiovascular reaction."),
         hints={"filters": {"r": "serious adverse event",
                            "n": "neurological reaction",
                            "c": "cardiovascular reaction"},
-               "joins": {"n": "neurological", "c": "cardiovascular"}},
+               "joins": {"n": "neurological", "c": "cardiovascular"},
+               "source": BIODEX_SOURCE},
     ),
     Demo(
         key="compaction",
@@ -213,10 +234,9 @@ DEMOS = (
         sql=COMPACTION_SQL,
         tables=(CONVERSATIONS, TOOL_QUESTIONS),
         view="compaction",
-        note=("One retention question per tool call and per tool result, "
-              "answered against the compaction state of its conversation. "
-              "The state is the anchor, so every question of a "
-              "conversation reads it from KV."),
+        note=("The query finds the tool calls and tool results that should "
+              "remain when an agent trace is shortened."),
+        hints={"source": OPENHANDS_SOURCE},
     ),
 )
 

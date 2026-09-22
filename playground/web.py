@@ -14,15 +14,17 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import json
 import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Callable
 
 import httpx
 import pyarrow as pa
+import pyarrow.csv as pa_csv
 import pyarrow.ipc as ipc
 from starlette.applications import Starlette
 from starlette.concurrency import run_in_threadpool
@@ -138,14 +140,23 @@ class Metrics:
         self.settings = settings
         self._lock = threading.Lock()
         self._tokenizers: dict = {}
+        self._tokenizer_locks: dict = {}
+        self._tables_cache: dict = {}
+        self._document_tokens: dict = {}
+        self._document_locks: dict = {}
         self._descriptions: dict = {}
         self._results: dict = {}
+        self._partials: dict = {}
         self._pending: dict = {}
 
     def _client(self, model: str):
         return server_client(self.settings, model)
 
     def _tables(self, item) -> dict:
+        with self._lock:
+            cached = self._tables_cache.get(item.group)
+        if cached is not None:
+            return cached
         manifest = read_manifest(self.settings.data_dir)
         group = manifest["groups"].get(item.group)
         if group is None:
@@ -155,19 +166,48 @@ class Metrics:
             path = self.settings.data_dir / group["tables"][spec.name]["file"]
             with ipc.open_file(str(path)) as reader:
                 tables[spec.name] = reader.read_all()
-        return tables
+        with self._lock:
+            return self._tables_cache.setdefault(item.group, tables)
 
     def _tokenizer(self, model: str):
-        if model not in self._tokenizers:
-            factory = self.settings.tokenizer_factory or hf_tokenizer
-            self._tokenizers[model] = factory(model)
-        return self._tokenizers[model]
+        with self._lock:
+            cached = self._tokenizers.get(model)
+            model_lock = self._tokenizer_locks.setdefault(
+                model, threading.Lock())
+        if cached is not None:
+            return cached
+        with model_lock:
+            with self._lock:
+                cached = self._tokenizers.get(model)
+            if cached is None:
+                factory = self.settings.tokenizer_factory or hf_tokenizer
+                cached = factory(model)
+                with self._lock:
+                    self._tokenizers[model] = cached
+            return cached
 
-    def _description(self, model: str, item, tables: dict, anchors: dict):
-        key = (item.key, tuple(sorted(anchors.items())))
+    def _documents(self, model: str, item, tables: dict):
+        """Reusable document tokens and their per-dataset lock."""
+        key = (model, item.group)
+        with self._lock:
+            cached = self._document_tokens.get(key)
+            document_lock = self._document_locks.get(key)
+        if cached is None:
+            candidate = regret.DocumentTokens(tables, self._tokenizer(model))
+            with self._lock:
+                cached = self._document_tokens.setdefault(key, candidate)
+                document_lock = self._document_locks.setdefault(
+                    key, threading.Lock())
+        return cached, document_lock
+
+    def _description(self, model: str, item, tables: dict, anchors: dict,
+                     sql: str):
+        key = (item.key, sql, tuple(sorted(anchors.items())))
         if key not in self._descriptions:
             factory = self.settings.describe or describe_demo
-            self._descriptions[key] = factory(model, item, tables, anchors)
+            query_item = replace(item, sql=sql)
+            self._descriptions[key] = factory(
+                model, query_item, tables, anchors)
         return self._descriptions[key]
 
     def answers(self, client, status) -> tuple[dict, dict]:
@@ -232,15 +272,44 @@ class Metrics:
                 thread.start()
         return None
 
+    def partial(self, model: str, query_id: str, demo_key: str) -> dict | None:
+        """Return the engine-reported metrics available during scoring."""
+        with self._lock:
+            return self._partials.get((model, query_id, demo_key))
+
     def _compute_and_keep(self, model: str, query_id: str, demo_key: str) -> None:
         key = (model, query_id, demo_key)
         try:
+            self._prewarm(model, demo_key)
+            client = self._client(model)
+            status = client.status(query_id)
+            while status.state not in {
+                    "succeeded", "failed", "interrupted", "cancelled"}:
+                time.sleep(0.5)
+                status = client.status(query_id)
+            if status.state != "succeeded":
+                raise LookupError(f"query {query_id} is {status.state}")
             result = self.compute(model, query_id, demo_key)
         except Exception as error:  # noqa: BLE001 - handed to the poller
             result = error
         with self._lock:
             self._results[key] = result
             self._pending.pop(key, None)
+            if isinstance(result, BaseException):
+                self._partials.pop(key, None)
+
+    def _prewarm(self, model: str, demo_key: str) -> None:
+        """Tokenize a demo's documents while its GPU query is running."""
+        item = demo(demo_key)
+        tables = self._tables(item)
+        documents, document_lock = self._documents(model, item, tables)
+        keys = [
+            (spec.name, spec.text_col, str(row_id))
+            for spec in item.tables
+            for row_id in tables[spec.name].column(spec.id_col).to_pylist()
+        ]
+        with document_lock:
+            documents.fetch(keys)
 
     def compute(self, model: str, query_id: str, demo_key: str) -> dict:
         item = demo(demo_key)
@@ -254,26 +323,82 @@ class Metrics:
         if status.state != "succeeded":
             raise LookupError(f"query {query_id} is {status.state}")
         report = json.loads(client.file(query_id, status.result["files"]["report"]))
+        partial = regret.metrics(
+            report, {}, gpus=int(status.config["gpus"]),
+            usd_per_hour=self.settings.usd_per_hour)
+        partial.update(query_id=query_id, model=model, demo=demo_key,
+                       output_rows=status.result["rows"], complete=False)
+        with self._lock:
+            self._partials[key] = partial
         tables = self._tables(item)
         filters, joins = self.answers(client, status)
         if not filters and not joins and item.view == "score":
             filters = self.scored_rows(client, status, item)
         anchors = {position: anchor for position, (anchor, _) in joins.items()}
-        description = self._description(model, item, tables, anchors)
+        query_sql = (status.spec or {}).get("sql") or item.sql
+        description = self._description(
+            model, item, tables, anchors, query_sql)
         id_cols = {spec.name: spec.id_col for spec in item.tables}
         output = regret.run_output(
             description, report, filters,
             {position: table for position, (_, table) in joins.items()},
             tables, id_cols)
-        numbers = regret.token_numbers(description, output, tables, id_cols,
-                                       self._tokenizer(model))
+        documents, document_lock = self._documents(model, item, tables)
+        with document_lock:
+            numbers = regret.token_numbers(
+                description, output, tables, id_cols, documents=documents)
         result = regret.metrics(report, numbers, gpus=int(status.config["gpus"]),
                                 usd_per_hour=self.settings.usd_per_hour)
         result.update(query_id=query_id, model=model, demo=demo_key,
-                      output_rows=status.result["rows"])
+                      output_rows=status.result["rows"], complete=True)
         with self._lock:
             self._results[key] = result
+            self._partials.pop(key, None)
         return result
+
+    def preview(self, model: str, query_id: str, limit: int = 100) -> dict:
+        """Return the first result rows of a finished query as JSON values."""
+        client = self._client(model)
+        status = client.status(query_id)
+        if status.state != "succeeded":
+            raise LookupError(f"query {query_id} is {status.state}")
+        reader = client.result_batches(query_id)
+        schema = reader.schema
+        batches = []
+        left = limit
+        try:
+            for batch in reader:
+                if left <= 0:
+                    break
+                part = batch.slice(0, min(left, batch.num_rows))
+                batches.append(part)
+                left -= part.num_rows
+        finally:
+            reader.close()
+        table = pa.Table.from_batches(batches, schema=schema)
+        result = {
+            "columns": table.column_names,
+            "rows": table.to_pylist(),
+            "total_rows": int(status.result["rows"]),
+            "truncated": int(status.result["rows"]) > table.num_rows,
+        }
+        return json.loads(json.dumps(result, default=str))
+
+    def csv_result(self, model: str, query_id: str) -> bytes:
+        """Return every result row of a finished query as CSV."""
+        client = self._client(model)
+        status = client.status(query_id)
+        if status.state != "succeeded":
+            raise LookupError(f"query {query_id} is {status.state}")
+        reader = client.result_batches(query_id)
+        sink = pa.BufferOutputStream()
+        try:
+            with pa_csv.CSVWriter(sink, reader.schema) as writer:
+                for batch in reader:
+                    writer.write_batch(batch)
+        finally:
+            reader.close()
+        return sink.getvalue().to_pybytes()
 
     def true_pairs(self, model: str, query_id: str) -> dict:
         """Every join answer table's true pairs, as row indices."""
@@ -323,6 +448,16 @@ def create_web_app(settings: WebSettings) -> Starlette:
     """Build the page's Starlette application."""
     metrics = Metrics(settings)
     started = time.time()
+    index_path = settings.static_dir / "index.html"
+    asset_bytes = b"".join(
+        (settings.static_dir / name).read_bytes()
+        for name in ("app.js", "style.css"))
+    asset_version = hashlib.sha256(asset_bytes).hexdigest()[:12]
+    index_html = index_path.read_text("utf-8")
+    index_html = index_html.replace(
+        "/static/style.css", f"/static/style.css?v={asset_version}")
+    index_html = index_html.replace(
+        "/static/app.js", f"/static/app.js?v={asset_version}")
     threading.Thread(target=_heartbeat, args=(started,), daemon=True,
                      name="page-heartbeat").start()
     client = httpx.AsyncClient(timeout=httpx.Timeout(
@@ -334,8 +469,7 @@ def create_web_app(settings: WebSettings) -> Starlette:
         return read_manifest(settings.data_dir)
 
     async def index(request: Request):
-        path = settings.static_dir / "index.html"
-        return HTMLResponse(path.read_text("utf-8"))
+        return HTMLResponse(index_html, headers={"cache-control": "no-store"})
 
     async def favicon(request: Request):
         return Response(FAVICON_SVG, media_type="image/svg+xml")
@@ -345,7 +479,9 @@ def create_web_app(settings: WebSettings) -> Starlette:
         path = settings.static_dir / name
         if "/" in name or not path.is_file():
             return _error(f"no static file {name!r}", 404)
-        return FileResponse(str(path))
+        return FileResponse(
+            str(path), headers={
+                "cache-control": "public, max-age=31536000, immutable"})
 
     async def config(request: Request):
         manifest = await run_in_threadpool(refreshed_manifest)
@@ -402,7 +538,8 @@ def create_web_app(settings: WebSettings) -> Starlette:
         except Exception as error:
             return _error(f"{type(error).__name__}: {error}", 500)
         if result is None:
-            return JSONResponse({"status": "computing"}, status_code=202)
+            return JSONResponse({"status": "computing", "metrics": metrics.partial(
+                model, query_id, demo_key)}, status_code=202)
         return JSONResponse(result)
 
     async def join_pairs(request: Request):
@@ -414,6 +551,35 @@ def create_web_app(settings: WebSettings) -> Starlette:
             return _error(str(error), 409)
         return JSONResponse(result)
 
+    async def query_result(request: Request):
+        model = request.path_params["model"]
+        query_id = request.path_params["query_id"]
+        try:
+            result = await run_in_threadpool(
+                metrics.preview, model, query_id)
+        except LookupError as error:
+            return _error(str(error), 409)
+        except Exception as error:
+            return _error(f"{type(error).__name__}: {error}", 500)
+        return JSONResponse(result)
+
+    async def download_result(request: Request):
+        model = request.path_params["model"]
+        query_id = request.path_params["query_id"]
+        try:
+            result = await run_in_threadpool(
+                metrics.csv_result, model, query_id)
+        except LookupError as error:
+            return _error(str(error), 409)
+        except Exception as error:
+            return _error(f"{type(error).__name__}: {error}", 500)
+        return Response(
+            result,
+            media_type="text/csv",
+            headers={"content-disposition":
+                     'attachment; filename="quail-results.csv"'},
+        )
+
     routes = [
         Route("/", index),
         Route("/favicon.ico", favicon),
@@ -424,6 +590,8 @@ def create_web_app(settings: WebSettings) -> Starlette:
               methods=["GET", "POST", "HEAD"]),
         Route("/metrics/{model}/{query_id}", query_metrics),
         Route("/joins/{model}/{query_id}", join_pairs),
+        Route("/results/{model}/{query_id}", query_result),
+        Route("/downloads/{model}/{query_id}", download_result),
     ]
     @contextlib.asynccontextmanager
     async def lifespan(app):
