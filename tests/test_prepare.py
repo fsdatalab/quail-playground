@@ -7,6 +7,7 @@ import pyarrow.ipc as ipc
 import pytest
 
 from playground import prepare
+from playground.demos import demo
 
 
 def test_select_reviews_takes_negatives_then_positives(monkeypatch):
@@ -90,10 +91,10 @@ def test_write_group_names_files_by_content_and_lists_uploads(tmp_path, tiny_tab
     prepare.write_manifest(root, {"imdb": {"tables": {}, "page": "imdb.json"}})
     manifest = prepare.read_manifest(root)
     assert set(manifest["groups"]) == {"bio", "imdb"}, "groups accumulate"
-    uploads = prepare.uploads_for(manifest["groups"], root)
-    assert set(uploads) == {"qwen3-4b-fp8"}
-    prepared = uploads["qwen3-4b-fp8"]
-    assert sorted(item.spec["columns"][0] for item in prepared) == ["id", "id"]
-    assert {item.content_id for item in prepared} == {
-        reports["content_id"], entry["tables"]["terms"]["content_id"]}
+    prepared = prepare.uploads_for(demo("bio-4"), manifest["groups"], root)
+    assert [item.spec["columns"] for item in prepared] == [
+        ["id", "report"], ["id", "term"]]
+    assert [item.content_id for item in prepared] == [
+        reports["content_id"], entry["tables"]["terms"]["content_id"]]
     assert all(item.upload_path.exists() for item in prepared)
+    assert prepare.uploads_for(demo("imdb-ending"), manifest["groups"], root) == []

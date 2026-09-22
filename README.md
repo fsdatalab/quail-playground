@@ -26,8 +26,8 @@ flowchart LR
   P -->|bearer token added| Q1[Quail Server · qwen3-4b-fp8 · H100]
   P --> Q2[Quail Server · qwen3-reranker-0.6b · H100]
   P --> Q3[Quail Server · diffusion-gemma-26b · H100]
-  U[upload_inputs · CPU function] -->|PUT /v1/inputs| Q1 & Q2 & Q3
-  V[(quail-results Volume)] --- P & U & Q1 & Q2 & Q3
+  P -->|Run: PUT /v1/inputs, POST /v1/queries| Q1 & Q2 & Q3
+  V[(quail-results Volume)] --- Q1 & Q2 & Q3
 ```
 
 - The three GPU containers run quail-server as shipped
@@ -40,52 +40,53 @@ flowchart LR
   static files, forwards `/s/<model>/v1/...` to that model's server with
   the bearer token added, and computes the token numbers of a finished
   query (`playground/web.py`, `playground/regret.py`).
-- The input tables are built once by `playground/prepare.py` and
-  uploaded to each server through quail-server's own upload route.
+- The input tables are built by `playground/prepare.py` while the
+  page's image builds. Run uploads them to the query's server through
+  quail-server's own upload route and submits the query.
 
 ## Deploy
 
-Run everything from the repository root. The images copy
-`pyproject.toml` and `uv.lock` from the working directory.
+Run from the repository root. The images copy `pyproject.toml` and
+`uv.lock` from the working directory; `uv sync` inside the image
+installs `quail-engine` from the GitHub commit the lock pins.
 
 ```bash
 uv sync
 modal secret create quail-server-token \
     QUAIL_SERVER_TOKEN=<token> HF_TOKEN=<hugging-face-token>
-modal deploy -m playground.modal_app 2>&1 | tee deploy.log
+modal deploy playground/modal_app.py 2>&1 | tee deploy.log
 ```
 
-`modal deploy` prints four URLs: the page and the three servers. The
-page is the one for `page`.
+The first deploy builds the page's image, which includes building the
+demo data: it downloads IMDB, the quail-bench BIO corpus, and the
+sampled trajectories, tokenizes the reports, and writes the Arrow
+tables into the image. That takes a few minutes and happens once per
+change to `playground/`.
 
-Then build the demo data and hand it to the servers. This downloads
-IMDB, the quail-bench BIO corpus, and the sampled trajectories, tokenizes
-the reports, and uploads the Arrow files. It takes a few minutes; the
-servers start on their first upload, which is also when each takes its
-snapshot.
-
-```bash
-modal run -m playground.modal_app::prepare 2>&1 | tee prepare.log
-```
-
-`prepare` accepts `--groups imdb,bio,compaction` to rebuild some of
-the data, `--no-register` to only build, and `--compaction-limit` and
-`--compaction-seed` for the trajectory sample. `modal run -m
-playground.modal_app::register` uploads data that is already on the
-Volume, for example after redeploying the servers. `modal run -m
-playground.modal_app::warm` starts every server once, so a snapshot
-exists before a demo.
+`modal deploy` prints four URLs: the page (`page`) and the three
+servers. Open the page; that is the whole demo. Pressing Run uploads the
+query's tables to its server (skipped once the server has them) and
+submits the query.
 
 The secret is the same `quail-server-token` that
 `quail.server.modal_app` uses. `HF_TOKEN` is needed for DiffusionGemma's
 gated weights and tokenizer.
 
+Each server takes its memory snapshot the first time it starts, which
+is the first Run on that model, or:
+
+```bash
+modal run playground/modal_app.py::warm 2>&1 | tee warm.log
+```
+
 ## During a demo
 
 Open the page, pick a query, press Run. Switching to a query pings its
 server, so a cold container restores while you talk; the header says
-when it is ready. A server stays up for 15 minutes after its last
-request (`SCALEDOWN_S` in `playground/modal_app.py`).
+when it is ready. Each server runs at most one container
+(`max_containers=1`), and so does the page. A server stays up for 15
+minutes after its last request (`SCALEDOWN_S` in
+`playground/modal_app.py`).
 
 The Modal app is `quail-playground`. It shares the `quail-results`,
 `quail-hf-cache`, and `quail-kernel-cache` Volumes with the quail

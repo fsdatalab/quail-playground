@@ -108,12 +108,22 @@ def test_proxy_adds_the_token_and_keeps_quail_headers(data_dir, monkeypatch):
 
 
 class FakeServerClient:
-    """What Metrics reads off a server: the status, files, and answers."""
+    """What the page asks a server: uploads, submissions, status, files."""
 
-    def __init__(self, status: QueryStatus, files: dict, answers=()):
+    def __init__(self, status: QueryStatus = None, files: dict = None,
+                 answers=()):
         self._status = status
-        self._files = files
+        self._files = files or {}
         self._answers = list(answers)
+        self.uploaded = []
+        self.submitted = []
+
+    def upload_input(self, prepared):
+        self.uploaded.append(prepared)
+
+    def submit(self, body):
+        self.submitted.append(body)
+        return _status(state="queued", rows=0)
 
     def status(self, query_id):
         return self._status
@@ -191,6 +201,35 @@ def test_metrics_use_the_saved_answer_tables(data_dir, monkeypatch, tiny_tables)
     with TestClient(app) as client:
         response = client.get(f"/metrics/{QWEN3_4B}/q1?demo={item.key}")
         assert response.status_code == 409 and "running" in response.text
+
+
+def test_run_uploads_the_tables_then_submits(data_dir, monkeypatch):
+    seen = []
+    fake = FakeServerClient()
+    clients = []
+
+    def factory(endpoint, token):
+        clients.append((endpoint, token))
+        return fake
+
+    app = make_app(data_dir, seen, monkeypatch, client_factory=factory)
+    with TestClient(app) as client:
+        response = client.post("/run/imdb-ending")
+        assert response.status_code == 201
+        assert response.json()["state"] == "queued"
+        assert clients == [("http://upstream", "secret")]
+        (prepared,) = fake.uploaded
+        assert prepared.upload_path.name.endswith(".arrow")
+        (body,) = fake.submitted
+        assert body["config"] == {"model": QWEN3_4B, "device": "h100-sxm",
+                                  "gpus": 1, "backend": "quail"}
+        assert body["inputs"] == {"reviews": prepared.spec}
+        assert body["inputs"]["reviews"]["id_col"] == "review_id"
+        assert "AI.IF" in body["sql"] and body["dialect"] == "bq"
+        # a demo whose data is missing, or whose server is not deployed
+        assert client.post("/run/bio-4").status_code == 409
+        assert client.post("/run/imdb-sentiment").status_code == 404
+        assert client.post("/run/nope").status_code == 404
 
 
 def test_join_pairs_are_read_from_the_saved_tables(data_dir, monkeypatch):

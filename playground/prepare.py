@@ -224,33 +224,30 @@ def write_group(root: Path, group: str, tables: dict, page: dict,
     return entry
 
 
-def uploads_for(entries: dict, root: Path) -> dict:
-    """Model name -> the prepared inputs its demos read, ready to upload.
+def uploads_for(item, entries: dict, root: Path) -> list:
+    """The demo's tables as quail-server uploads, one per table.
+
+    Each item is a ``PreparedInput`` whose ``spec`` is the submission's
+    input description; ``upload_path`` is the Arrow file in the image.
+    Tables the manifest lacks are left out.
 
     Args:
+        item: The demo.
         entries: The manifest groups.
         root: The data directory the manifest's file paths are under.
-
     """
-    from playground.demos import DEMOS
     from quail.server.inputs import PreparedInput
 
-    uploads = {}
-    for item in DEMOS:
-        group = entries.get(item.group)
-        if group is None:
+    group = entries.get(item.group) or {"tables": {}}
+    uploads = []
+    for spec in item.tables:
+        table = group["tables"].get(spec.name)
+        if table is None:
             continue
-        for spec in item.tables:
-            table = group["tables"].get(spec.name)
-            if table is None:
-                continue
-            prepared = PreparedInput(
-                {"kind": "snapshot", "content_id": table["content_id"],
-                 "id_col": table["id_col"], "columns": table["columns"]},
-                root / table["file"])
-            if all(existing.content_id != prepared.content_id
-                   for existing in uploads.setdefault(item.model, [])):
-                uploads[item.model].append(prepared)
+        uploads.append(PreparedInput(
+            {"kind": "snapshot", "content_id": table["content_id"],
+             "id_col": table["id_col"], "columns": table["columns"]},
+            root / table["file"]))
     return uploads
 
 
