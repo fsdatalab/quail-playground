@@ -1,13 +1,13 @@
 """The playground page: static files, a proxy to each server, and metrics.
 
-The page never sees the servers' bearer token. ``POST /run/<demo>``
-uploads the demo's tables to its Quail Server (skipped when the server
-has them) and submits the query, with quail-server's own client. Every
-``/s/<model>/v1/...`` request is forwarded to that model's server with
-the token added, so the browser polls one origin. ``/metrics`` reads a
-finished query's saved report and answer tables off its server and
-computes the token numbers on this CPU, with the input tables and the
-model's tokenizer.
+The page never sees the servers' bearer token. Every
+``/s/<model>/v1/...`` request is forwarded to that model's Quail Server
+with the token added, so the browser submits and polls through one
+origin. The servers already hold the demo tables, registered from the
+image at start; ``/config`` gives the page their content ids.
+``/metrics`` reads a finished query's saved report and answer tables
+off its server and computes the token numbers on this CPU, with the
+input tables and the model's tokenizer.
 """
 
 from __future__ import annotations
@@ -29,7 +29,7 @@ from starlette.routing import Route
 
 from playground import regret
 from playground.demos import DEMOS, DEVICE, MODELS, demo
-from playground.prepare import read_manifest, uploads_for
+from playground.prepare import read_manifest
 
 PROXY_TIMEOUT_S = 90.0
 # a long poll on a server holds for at most this long
@@ -298,43 +298,6 @@ def create_web_app(settings: WebSettings) -> Starlette:
             return _error(f"the {group} data has not been prepared", 404)
         return FileResponse(str(path), media_type="application/json")
 
-    async def run_demo(request: Request):
-        """Upload the demo's tables if the server lacks them, then submit."""
-        from quail.server.records import ServerError
-
-        try:
-            item = demo(request.path_params["demo"])
-        except KeyError as error:
-            return _error(str(error), 404)
-        try:
-            client = server_client(settings, item.model)
-        except LookupError as error:
-            return _error(str(error), 404)
-        manifest = await run_in_threadpool(refreshed_manifest)
-        prepared = uploads_for(item, manifest.get("groups", {}), settings.data_dir)
-        if len(prepared) != len(item.tables):
-            return _error(f"the {item.group} data is not in this image", 409)
-
-        def submit():
-            for entry in prepared:
-                client.upload_input(entry)
-            body = {
-                "sql": item.sql, "dialect": item.dialect, "order": None,
-                "config": {"model": item.model, "device": DEVICE, "gpus": 1,
-                           "backend": "quail"},
-                "inputs": {spec.name: entry.spec
-                           for spec, entry in zip(item.tables, prepared)},
-                "session_id": "playground", "timeout_s": item.timeout_s,
-            }
-            return client.submit(body).to_dict()
-
-        try:
-            status = await run_in_threadpool(submit)
-        except ServerError as error:
-            return _error(f"the {item.model} server refused: {error}",
-                          getattr(error, "status", 502))
-        return JSONResponse(status, status_code=201)
-
     async def proxy(request: Request):
         model = request.path_params["model"]
         path = request.path_params["path"]
@@ -386,7 +349,6 @@ def create_web_app(settings: WebSettings) -> Starlette:
         Route("/static/{name}", static),
         Route("/config", config),
         Route("/data/{group}", data),
-        Route("/run/{demo}", run_demo, methods=["POST"]),
         Route("/s/{model}/v1/{path:path}", proxy,
               methods=["GET", "POST", "HEAD"]),
         Route("/metrics/{model}/{query_id}", query_metrics),

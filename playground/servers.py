@@ -12,6 +12,7 @@ snapshot and its first real query does not boot the model.
 
 from __future__ import annotations
 
+import shutil
 import uuid
 from pathlib import Path
 
@@ -124,3 +125,23 @@ class PlaygroundServer:
             # child yet, so swapping it in costs nothing
             self.server.scheduler.executor.close()
             self.server.scheduler.executor = executor
+
+    def add_input(self, content_id: str, source: str | Path) -> bool:
+        """Register an Arrow IPC file as an uploaded input snapshot.
+
+        The file is copied into the server's inputs directory under its
+        content id, where an upload through ``PUT /v1/inputs`` lands.
+        Returns False when the server already has this snapshot.
+        """
+        store = self.server.store
+        if store.get_input(content_id) is not None:
+            return False
+        source = Path(source)
+        if file_digest(source) != content_id:
+            raise ValueError(f"{source} does not hash to {content_id}")
+        target = self.server.inputs_dir / f"{content_id}.arrow"
+        temporary = target.with_name(f"{target.name}.{uuid.uuid4().hex}.tmp")
+        shutil.copyfile(source, temporary)
+        temporary.replace(target)
+        store.put_input(content_id, str(target), target.stat().st_size)
+        return True

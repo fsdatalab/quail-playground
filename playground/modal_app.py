@@ -14,10 +14,10 @@ real query without booting the model. ``@modal.enter(snap=False)``
 restores the server's database from the Volume and starts the
 checkpoint thread, the parts that must not be in a snapshot.
 
-The demo data (``playground.prepare``) is built into the page's image
-when the image builds. Pressing Run on the page uploads a demo's tables
-to its server through quail-server's upload route, which skips tables
-the server already has, and submits the query.
+The page and the servers share one image. The demo data
+(``playground.prepare``) is built into it when the image builds, and
+each server registers the tables its demos read when it starts, the
+same way an upload lands. Pressing Run on the page submits the query.
 
 Data on the ``quail-results`` Volume:
 ``/results/quail-playground/servers/<model>`` holds that server's
@@ -65,19 +65,12 @@ def build_demo_data() -> None:
     build(DEMO_DATA_DIR, workdir=LOCAL_DIR / "build")
 
 
-gpu_image = (
+image = (
     modal.Image.from_registry(CUDA_BASE, add_python="3.12")
     .entrypoint([])
     .apt_install("git")
     .env(CACHE_ENV)
     .uv_sync(uv_version=UV_VERSION)
-    .add_local_python_source("playground")
-)
-cpu_image = (
-    modal.Image.debian_slim(python_version="3.12")
-    .apt_install("git")
-    .env({"HF_HUB_ENABLE_HF_TRANSFER": "1"})
-    .uv_sync(uv_version=UV_VERSION, extra_options="--no-install-package vllm")
     .add_local_python_source("playground", copy=True)
     .run_function(build_demo_data, secrets=[secret], timeout=4 * 3600,
                   memory=16_384,
@@ -128,6 +121,24 @@ class ServerContainer:
         inner.add_closer(self.checkpoint.stop)
         if inner.recovered:
             print(f"marked interrupted: {inner.recovered}", flush=True)
+        self.register_inputs()
+
+    def register_inputs(self) -> None:
+        """Register the demo tables this model's queries read, from the image."""
+        from playground.demos import DEMOS
+        from playground.prepare import read_manifest, uploads_for
+
+        groups = read_manifest(DEMO_DATA_DIR)["groups"]
+        added = 0
+        for item in DEMOS:
+            if item.model != self.model:
+                continue
+            for prepared in uploads_for(item, groups, DEMO_DATA_DIR):
+                added += self.server.add_input(prepared.content_id,
+                                               prepared.upload_path)
+        if added:
+            self.checkpoint.sync()
+        print(f"{self.model}: {added} demo tables registered", flush=True)
 
     def stop(self) -> None:
         if self.checkpoint is not None:
@@ -137,7 +148,7 @@ class ServerContainer:
 def server_class(cls):
     """Apply the shared container options of a server class."""
     return app.cls(
-        image=gpu_image,
+        image=image,
         gpu="H100!",
         memory=98_304,
         volumes={
@@ -250,11 +261,10 @@ def deployed_server_urls() -> dict:
 
 
 @app.function(
-    image=cpu_image,
+    image=image,
     secrets=[secret],
     timeout=600,
     scaledown_window=SCALEDOWN_S,
-    memory=8_192,
     max_containers=1,
 )
 @modal.concurrent(max_inputs=100)

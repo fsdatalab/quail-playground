@@ -1,8 +1,8 @@
 // The playground page. Everything goes through the page's own origin:
-// /config, /data/<group>, /run/<demo> (uploads the tables and submits
-// the query), /s/<model>/v1/... (a proxy to that model's Quail Server,
-// for polling), /metrics and /joins for the numbers of a finished
-// query. No token lives in the browser.
+// /config, /data/<group>, /s/<model>/v1/... (a proxy to that model's
+// Quail Server), /metrics and /joins for the numbers of a finished
+// query. No token lives in the browser. The servers hold the demo
+// tables already; /config carries their content ids.
 
 "use strict";
 
@@ -202,6 +202,18 @@ function setState(name) {
   node.className = `state ${name}`;
 }
 
+function inputsFor(demo) {
+  const group = state.config.groups[demo.group];
+  if (!group) throw new Error(`the ${demo.group} data is not in this image`);
+  const inputs = {};
+  for (const table of demo.tables) {
+    const entry = group.tables[table.name];
+    inputs[table.name] = { kind: "snapshot", content_id: entry.content_id,
+      id_col: entry.id_col, columns: entry.columns };
+  }
+  return inputs;
+}
+
 // ---------- running a query ----------
 
 async function run() {
@@ -220,13 +232,19 @@ async function run() {
   $("plan").textContent = "";
   $("progress").textContent = "";
   setState("queued");
-  logEvent(run, "uploading inputs the server lacks, then submitting");
+  logEvent(run, "submitting the query");
   const timer = setInterval(() => {
     $("timer").textContent = `${((performance.now() - started) / 1000).toFixed(1)} s`;
   }, 100);
   try {
-    // the page uploads the tables the server lacks, then submits
-    const status = await getJson(`/run/${demo.key}`, { method: "POST" });
+    const body = {
+      sql: demo.sql, dialect: demo.dialect, order: null,
+      config: { model: demo.model, device: state.config.device, gpus: 1, backend: "quail" },
+      inputs: inputsFor(demo), session_id: "playground", timeout_s: demo.timeout_s,
+    };
+    const status = await getJson(`/s/${demo.model}/v1/queries`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify(body) });
     run.id = status.id;
     $("query-id").textContent = `→ ${status.id}`;
     applyStatus(run, status);

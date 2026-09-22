@@ -26,7 +26,6 @@ flowchart LR
   P -->|bearer token added| Q1[Quail Server · qwen3-4b-fp8 · H100]
   P --> Q2[Quail Server · qwen3-reranker-0.6b · H100]
   P --> Q3[Quail Server · diffusion-gemma-26b · H100]
-  P -->|Run: PUT /v1/inputs, POST /v1/queries| Q1 & Q2 & Q3
   V[(quail-results Volume)] --- Q1 & Q2 & Q3
 ```
 
@@ -36,13 +35,14 @@ flowchart LR
   model, so a container that starts later restores the loaded model
   instead of booting it (`playground/servers.py`,
   `playground/modal_app.py`).
-- The page is a small Starlette app on a CPU container. It serves the
-  static files, forwards `/s/<model>/v1/...` to that model's server with
-  the bearer token added, and computes the token numbers of a finished
-  query (`playground/web.py`, `playground/regret.py`).
+- The page is a small Starlette app on a CPU container of the same
+  image. It serves the static files, forwards `/s/<model>/v1/...` to
+  that model's server with the bearer token added, and computes the
+  token numbers of a finished query (`playground/web.py`,
+  `playground/regret.py`).
 - The input tables are built by `playground/prepare.py` while the
-  page's image builds. Run uploads them to the query's server through
-  quail-server's own upload route and submits the query.
+  image builds. Each server registers the tables its queries read when
+  it starts, exactly as an upload would land, so Run only submits.
 
 ## Deploy
 
@@ -57,16 +57,15 @@ modal secret create quail-server-token \
 modal deploy playground/modal_app.py 2>&1 | tee deploy.log
 ```
 
-The first deploy builds the page's image, which includes building the
+The first deploy builds the one image, which includes building the
 demo data: it downloads IMDB, the quail-bench BIO corpus, and the
 sampled trajectories, tokenizes the reports, and writes the Arrow
 tables into the image. That takes a few minutes and happens once per
 change to `playground/`.
 
 `modal deploy` prints four URLs: the page (`page`) and the three
-servers. Open the page; that is the whole demo. Pressing Run uploads the
-query's tables to its server (skipped once the server has them) and
-submits the query.
+servers. Open the page; that is the whole demo. A server registers its
+demo tables when it starts, and Run submits the query.
 
 The secret is the same `quail-server-token` that
 `quail.server.modal_app` uses. `HF_TOKEN` is needed for DiffusionGemma's

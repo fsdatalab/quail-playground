@@ -87,3 +87,23 @@ def test_server_is_quail_server_with_one_model_and_the_warm_executor(tmp_path):
     with pytest.raises(ValueError, match="unknown playground model"):
         servers.PlaygroundServer("gpt-9", tmp_path, tmp_path / "x.sqlite3", None)
     server.server.stop()
+
+
+def test_add_input_registers_a_file_the_way_an_upload_lands(tmp_path):
+    from quail.server.artifacts import write_ipc_file
+    from quail.server.inputs import file_digest
+
+    server = servers.PlaygroundServer(
+        QWEN3_4B, tmp_path / "data", tmp_path / "live.sqlite3", None,
+        executor=FakeExecutor([]))
+    source = tmp_path / "reviews.arrow"
+    write_ipc_file(source, servers.warmup_table())
+    content_id = file_digest(source)
+    assert server.add_input(content_id, source)
+    record = server.server.store.get_input(content_id)
+    assert record.path == str(tmp_path / "data" / "inputs" / f"{content_id}.arrow")
+    assert record.byte_count == source.stat().st_size
+    assert not server.add_input(content_id, source), "already registered"
+    with pytest.raises(ValueError, match="does not hash"):
+        server.add_input("0" * 64, source)
+    server.server.stop()
