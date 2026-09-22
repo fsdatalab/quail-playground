@@ -10,6 +10,7 @@ const $ = (id) => document.getElementById(id);
 const DONE = new Set(["succeeded", "failed", "interrupted", "cancelled"]);
 const POLL_WAIT_S = 25;
 const SERVER_START_LIMIT_MS = 20 * 60 * 1000;
+const METRICS_LIMIT_MS = 15 * 60 * 1000;
 const ANSWERS_PAGE = 5000;
 
 const state = {
@@ -366,7 +367,20 @@ async function finish(run) {
   try {
     run.computing = true;
     renderCards(run, null);
-    metrics = await getJson(`/metrics/${run.model}/${run.id}?demo=${run.demo.key}`, undefined, 3);
+    // the page computes the numbers on a thread; 202 means not yet
+    const started = performance.now();
+    while (performance.now() - started < METRICS_LIMIT_MS) {
+      const response = await fetch(`/metrics/${run.model}/${run.id}?demo=${run.demo.key}`);
+      if (response.status === 202) {
+        await new Promise((resolve) => setTimeout(resolve, 2000));
+        continue;
+      }
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error ? data.error.message : `HTTP ${response.status}`);
+      metrics = data;
+      break;
+    }
+    if (!metrics) throw new Error("the metrics did not finish in time");
     logEvent(run, `metrics: ${fmtInt(metrics.input_tokens)} requested input tokens, ` +
       `${fmtInt(metrics.fresh_tokens)} fresh, minimum ${fmtInt(metrics.minimum_tokens)}`);
   } catch (error) {

@@ -140,6 +140,7 @@ class Metrics:
         self._tokenizers: dict = {}
         self._descriptions: dict = {}
         self._results: dict = {}
+        self._pending: dict = {}
 
     def _client(self, model: str):
         return server_client(self.settings, model)
@@ -208,11 +209,45 @@ class Metrics:
         return {(alias, 0): pa.table({alias: pa.array(found, pa.int64())})
                 for alias, found in rows.items()}
 
+    def poll(self, model: str, query_id: str, demo_key: str) -> dict | None:
+        """The numbers when they are ready, else None with the work started.
+
+        The counts take from seconds to minutes, so they are computed on
+        a thread and the page asks again until they are there. A
+        failure is remembered and raised to every later poll.
+        """
+        item = demo(demo_key)
+        key = (model, query_id, item.key)
+        with self._lock:
+            if key in self._results:
+                result = self._results[key]
+                if isinstance(result, BaseException):
+                    raise result
+                return result
+            if key not in self._pending:
+                thread = threading.Thread(
+                    target=self._compute_and_keep, args=(model, query_id, item.key),
+                    name=f"metrics-{query_id[:8]}", daemon=True)
+                self._pending[key] = thread
+                thread.start()
+        return None
+
+    def _compute_and_keep(self, model: str, query_id: str, demo_key: str) -> None:
+        key = (model, query_id, demo_key)
+        try:
+            result = self.compute(model, query_id, demo_key)
+        except Exception as error:  # noqa: BLE001 - handed to the poller
+            result = error
+        with self._lock:
+            self._results[key] = result
+            self._pending.pop(key, None)
+
     def compute(self, model: str, query_id: str, demo_key: str) -> dict:
         item = demo(demo_key)
         key = (model, query_id, demo_key)
         with self._lock:
-            if key in self._results:
+            if key in self._results and not isinstance(
+                    self._results[key], BaseException):
                 return self._results[key]
         client = self._client(model)
         status = client.status(query_id)
@@ -361,11 +396,13 @@ def create_web_app(settings: WebSettings) -> Starlette:
         demo_key = request.query_params.get("demo", "")
         try:
             result = await run_in_threadpool(
-                metrics.compute, model, query_id, demo_key)
+                metrics.poll, model, query_id, demo_key)
         except (LookupError, KeyError) as error:
             return _error(str(error), 409)
         except Exception as error:
             return _error(f"{type(error).__name__}: {error}", 500)
+        if result is None:
+            return JSONResponse({"status": "computing"}, status_code=202)
         return JSONResponse(result)
 
     async def join_pairs(request: Request):

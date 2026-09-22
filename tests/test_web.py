@@ -1,6 +1,7 @@
 """The page's routes: config, data, the proxy, and the metrics."""
 
 import json
+import time
 from pathlib import Path
 
 import httpx
@@ -174,7 +175,14 @@ def test_metrics_use_the_saved_answer_tables(data_dir, monkeypatch, tiny_tables)
     fake = FakeServerClient(status, files)
     monkeypatch.setattr(app.state.metrics, "_client", lambda model: fake)
     with TestClient(app) as client:
-        result = client.get(f"/metrics/{QWEN3_4B}/q1?demo={item.key}").json()
+        # computed on a thread: 202 until the numbers are there
+        for _ in range(200):
+            response = client.get(f"/metrics/{QWEN3_4B}/q1?demo={item.key}")
+            if response.status_code != 202:
+                break
+            time.sleep(0.05)
+        assert response.status_code == 200, response.text
+        result = response.json()
         assert result["fresh_tokens"] == 100_000
         assert result["minimum_tokens"] < result["input_tokens"] < 100_000
         assert result["regret_tokens"] == 100_000 - result["minimum_tokens"]
@@ -190,7 +198,11 @@ def test_metrics_use_the_saved_answer_tables(data_dir, monkeypatch, tiny_tables)
     monkeypatch.setattr(app.state.metrics, "_client", lambda model: unfinished)
     app.state.metrics._results.clear()
     with TestClient(app) as client:
-        response = client.get(f"/metrics/{QWEN3_4B}/q1?demo={item.key}")
+        for _ in range(200):
+            response = client.get(f"/metrics/{QWEN3_4B}/q2?demo={item.key}")
+            if response.status_code != 202:
+                break
+            time.sleep(0.05)
         assert response.status_code == 409 and "running" in response.text
 
 
