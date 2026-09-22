@@ -7,12 +7,12 @@ Run it from the repository root: the images copy ``pyproject.toml`` and
 image installs ``quail-engine`` from the GitHub commit the lock pins.
 
 One class per model, each on one H100, at most one container each.
-``@modal.enter(snap=True)`` runs a tiny query so the executor child has
-the model loaded and its kernels compiled, then Modal takes a memory
-snapshot that includes the GPU. A restored container serves its first
-real query without booting the model. ``@modal.enter(snap=False)``
-restores the server's database from the Volume and starts the
-checkpoint thread, the parts that must not be in a snapshot.
+``@modal.enter`` boots the model with a tiny query, so the first real
+query on a container does not pay the boot, then restores the server's
+database from the Volume and starts quail-server. There is no memory
+snapshot: quail's boot is 12 to 50 seconds from the cached weights and
+kernels, and restoring a GPU snapshot of the KV arena took as long or
+longer. A container stays up ``SCALEDOWN_S`` after its last request.
 
 The page and the servers share one image. The demo data
 (``playground.prepare``) is built into it when the image builds, and
@@ -47,8 +47,8 @@ STATIC_DIR = Path("/root/web")
 DEMO_DATA_DIR = Path("/root/demo-data")
 HF_CACHE_DIR = "/root/.cache/huggingface"
 KERNEL_CACHE_DIR = "/root/.cache/kernels"
-# an idle server stays up this long after its last request; a restore
-# from the snapshot is what a later request pays
+# an idle server stays up this long after its last request; a later
+# request pays the model boot again
 SCALEDOWN_S = 15 * 60
 SERVER_CLASSES = {QWEN3_4B: "Qwen3Server", RERANKER: "RerankerServer",
                   GEMMA: "GemmaServer"}
@@ -113,7 +113,7 @@ class ServerContainer:
         self.checkpoint = None
 
     def warm(self) -> None:
-        """Load the model in the executor child; runs before the snapshot."""
+        """Load the model in the executor child with one tiny query."""
         from playground.servers import warm_up
         from quail.server.executor import ChildProcessExecutor
 
@@ -123,7 +123,7 @@ class ServerContainer:
         self.executor = executor
 
     def start(self) -> None:
-        """Build the server around the warm executor; runs after a restore."""
+        """Restore the database and build the server around the warm executor."""
         from playground.servers import PlaygroundServer
         from quail.server.checkpoint import Checkpoint, restore
 
@@ -181,8 +181,6 @@ def server_class(cls):
         timeout=24 * 3600,
         scaledown_window=SCALEDOWN_S,
         max_containers=1,
-        enable_memory_snapshot=True,
-        experimental_options={"enable_gpu_snapshot": True},
     )(modal.concurrent(max_inputs=64)(cls))
 
 
@@ -190,13 +188,10 @@ def server_class(cls):
 class Qwen3Server:
     """Quail Server for qwen3-4b-fp8: the IMDB ending query and BIO-4."""
 
-    @modal.enter(snap=True)
-    def warm(self):
+    @modal.enter()
+    def start(self):
         self.container = ServerContainer(QWEN3_4B)
         self.container.warm()
-
-    @modal.enter(snap=False)
-    def start(self):
         self.container.start()
 
     @modal.asgi_app()
@@ -216,13 +211,10 @@ class Qwen3Server:
 class RerankerServer:
     """Quail Server for qwen3-reranker-0.6b-bf16: the IMDB sentiment query."""
 
-    @modal.enter(snap=True)
-    def warm(self):
+    @modal.enter()
+    def start(self):
         self.container = ServerContainer(RERANKER)
         self.container.warm()
-
-    @modal.enter(snap=False)
-    def start(self):
         self.container.start()
 
     @modal.asgi_app()
@@ -242,13 +234,10 @@ class RerankerServer:
 class GemmaServer:
     """Quail Server for diffusion-gemma-26b-a4b-fp8: agent trace compaction."""
 
-    @modal.enter(snap=True)
-    def warm(self):
+    @modal.enter()
+    def start(self):
         self.container = ServerContainer(GEMMA)
         self.container.warm()
-
-    @modal.enter(snap=False)
-    def start(self):
         self.container.start()
 
     @modal.asgi_app()
@@ -309,7 +298,7 @@ def page():
 
 @app.local_entrypoint()
 def warm():
-    """Start every server once, so each takes its snapshot before a demo.
+    """Start every server once, so each boots its model before a demo.
 
     modal run playground/modal_app.py::warm
 

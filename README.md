@@ -30,11 +30,12 @@ flowchart LR
 ```
 
 - The three GPU containers run quail-server as shipped
-  (`quail.server.app.create_app`), one model each. Modal takes a memory
-  snapshot of each container after a tiny warm-up query has loaded the
-  model, so a container that starts later restores the loaded model
-  instead of booting it (`playground/servers.py`,
-  `playground/modal_app.py`).
+  (`quail.server.app.create_app`), one model each. A container boots
+  its model with a tiny warm-up query before it serves, so the first
+  Run pays no boot, and stays up 15 minutes after its last request
+  (`playground/servers.py`, `playground/modal_app.py`). There is no
+  memory snapshot: booting from the cached weights takes 12 to 50
+  seconds, and restoring a GPU snapshot of the KV arena took longer.
 - The page is a small Starlette app on a CPU container of the same
   image. It serves the static files, forwards `/s/<model>/v1/...` to
   that model's server with the bearer token added, and computes the
@@ -71,8 +72,8 @@ The servers' bearer token comes from the workspace's
 DiffusionGemma's gated weights and tokenizer unless the
 `quail-hf-cache` Volume already holds them.
 
-Each server takes its memory snapshot the first time it starts after a
-deploy, which is the first request to that model, or:
+A server's container starts on its first request and boots its model
+then. To have all three up before a demo:
 
 ```bash
 uv run python -m playground.warm https://<page url>
@@ -81,9 +82,8 @@ uv run python -m playground.warm https://<page url>
 That sends one request to each server and waits for the answer; no
 Modal run is involved.
 
-Every deploy replaces the servers, so after a deploy each model loads
-once more before its new snapshot exists. Run `warm` after deploying
-and before a demo.
+Every deploy replaces the servers, so run this after deploying and
+before a demo.
 
 ## During a demo
 

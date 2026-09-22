@@ -13,6 +13,7 @@ input tables and the model's tokenizer.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import threading
 import time
@@ -37,6 +38,10 @@ from playground.prepare import read_manifest
 # readiness ping while a container is still restoring
 PROXY_TIMEOUT_S = 120.0
 HEARTBEAT_S = 30.0
+FAVICON_SVG = (
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16">'
+    '<rect width="16" height="16" rx="3" fill="#c31331"/></svg>'
+)
 # a long poll on a server holds for at most this long
 MAX_WAIT_S = 60.0
 HOP_HEADERS = frozenset({
@@ -297,6 +302,9 @@ def create_web_app(settings: WebSettings) -> Starlette:
         path = settings.static_dir / "index.html"
         return HTMLResponse(path.read_text("utf-8"))
 
+    async def favicon(request: Request):
+        return Response(FAVICON_SVG, media_type="image/svg+xml")
+
     async def static(request: Request):
         name = request.path_params["name"]
         path = settings.static_dir / name
@@ -371,6 +379,7 @@ def create_web_app(settings: WebSettings) -> Starlette:
 
     routes = [
         Route("/", index),
+        Route("/favicon.ico", favicon),
         Route("/static/{name}", static),
         Route("/config", config),
         Route("/data/{group}", data),
@@ -379,6 +388,7 @@ def create_web_app(settings: WebSettings) -> Starlette:
         Route("/metrics/{model}/{query_id}", query_metrics),
         Route("/joins/{model}/{query_id}", join_pairs),
     ]
+    @contextlib.asynccontextmanager
     async def lifespan(app):
         task = asyncio.create_task(_loop_lag(started))
         try:

@@ -1,13 +1,11 @@
-"""One Quail Server per model, warmed before Modal takes its snapshot.
+"""One Quail Server per model, with its model booted before it serves.
 
 The server is quail-server as shipped: ``quail.server.app.create_app``
-with one model in its settings. What this module adds is the order of
-operations a snapshot needs. ``warm_up`` runs one tiny query through a
-``ChildProcessExecutor`` so the executor child has the model loaded and
-its kernels compiled before Modal snapshots the container. After a
-restore, ``PlaygroundServer`` builds the server around that warm
-executor, so its database and checkpoint thread stay out of the
-snapshot and its first real query does not boot the model.
+with one model in its settings. ``warm_up`` runs one tiny query through
+a ``ChildProcessExecutor`` so the executor child has the model loaded
+and its kernels compiled, and ``PlaygroundServer`` builds the server
+around that warm executor, so the first real query on a container does
+not boot the model.
 """
 
 from __future__ import annotations
