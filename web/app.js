@@ -1058,7 +1058,7 @@ class ReviewGrid {
   }
 }
 
-// BIO-4: reports are rows, terms are columns. The filters color the row
+// BIO: reports are rows, terms are columns. The filters color the row
 // and column headers; each join match is one cell. The left strip shows
 // which report prefixes are in KV, evicted, or computed again.
 class ReportMatrix {

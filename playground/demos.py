@@ -1,7 +1,7 @@
 """The four demo queries: their SQL, model, inputs, and how they are drawn.
 
 Every query runs on Quail Server. The SQL is the BigQuery dialect the
-docs use. Selectivity hints on the BIO-4 query are the quail-bench
+docs use. Selectivity hints on the BIO query are the quail-bench
 estimates for its predicates; the IMDB hints are the ones the
 repository's IMDB demo uses.
 """
@@ -18,7 +18,7 @@ GEMMA = "diffusion-gemma-26b-a4b-fp8"
 # one H100 per model; the order is the order the page lists them
 MODELS = (QWEN3_4B, RERANKER, GEMMA)
 
-# the reaction pairing prompt of BIO-4, asked by both joins
+# the reaction pairing prompt of BIO, asked by both joins
 REACTION_PROMPT = (
     "Does the medical report in DOCUMENT {0} describe the reaction in "
     "DOCUMENT {1} as something the patient experienced?"
@@ -36,7 +36,7 @@ CARDIOVASCULAR_PROMPT = (
     "Is this reaction cardiovascular, affecting the heart or blood vessels? {0}"
 )
 
-# quail-bench selectivity estimates for the BIO-4 predicates, at the
+# quail-bench selectivity estimates for the BIO predicates, at the
 # benchmark's labeled sample: 319 of 500 serious reports, 505 and 394 of
 # 1,127 terms, 19,144 of 563,500 report-term pairs
 SERIOUS_SELECTIVITY = round(319 / 500, 4)
@@ -88,7 +88,7 @@ AND AI.IF(
 )
 """
 
-BIO4_SQL = f"""\
+BIO_SQL = f"""\
 SELECT r.id, n.id, c.id
 FROM reports AS r
 JOIN terms AS n
@@ -184,6 +184,18 @@ TOOL_QUESTIONS = Table(
 
 DEMOS = (
     Demo(
+        key="compaction",
+        title="Agent trace compaction",
+        group="compaction",
+        model=GEMMA,
+        sql=COMPACTION_SQL,
+        tables=(CONVERSATIONS, TOOL_QUESTIONS),
+        view="compaction",
+        note=("The query finds the tool calls and tool results that should "
+              "remain when an agent trace is shortened."),
+        hints={"source": OPENHANDS_SOURCE},
+    ),
+    Demo(
         key="imdb-sentiment",
         title="IMDB, strong feelings",
         group="imdb",
@@ -209,11 +221,11 @@ DEMOS = (
                "source": IMDB_SOURCE},
     ),
     Demo(
-        key="bio-4",
-        title="BIO-4, serious reports with two reactions",
+        key="bio",
+        title="BIO, serious reports with two reactions",
         group="bio",
         model=QWEN3_4B,
-        sql=BIO4_SQL,
+        sql=BIO_SQL,
         tables=(REPORTS, TERMS),
         view="join",
         note=("The query finds serious or life-threatening medical reports "
@@ -224,18 +236,6 @@ DEMOS = (
                            "c": "cardiovascular reaction"},
                "joins": {"n": "neurological", "c": "cardiovascular"},
                "source": BIODEX_SOURCE},
-    ),
-    Demo(
-        key="compaction",
-        title="Agent trace compaction",
-        group="compaction",
-        model=GEMMA,
-        sql=COMPACTION_SQL,
-        tables=(CONVERSATIONS, TOOL_QUESTIONS),
-        view="compaction",
-        note=("The query finds the tool calls and tool results that should "
-              "remain when an agent trace is shortened."),
-        hints={"source": OPENHANDS_SOURCE},
     ),
 )
 

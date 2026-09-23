@@ -76,7 +76,7 @@ def test_filter_pieces_and_minimum_for_a_two_stage_filter(tiny_tables):
 
 
 def test_join_pieces_count_partners_once_per_anchor(tiny_tables):
-    item, description = describe("bio-4", tiny_tables, {0: "r", 1: "r"})
+    item, description = describe("bio", tiny_tables, {0: "r", 1: "r"})
     assert [join.id for join in description.info.joins] == ["join:0", "join:1"]
     assert description.info.joins[0].relations == ("r", "n")
     pieces = description.pieces

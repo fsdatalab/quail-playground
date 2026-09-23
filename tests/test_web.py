@@ -88,7 +88,7 @@ def test_page_config_and_data(data_dir, monkeypatch):
                                      "qwen3-reranker-0.6b-bf16": None,
                                      "diffusion-gemma-26b-a4b-fp8": None}
         assert [item["key"] for item in config["demos"]] == [
-            "imdb-sentiment", "imdb-ending", "bio-4", "compaction"]
+            "compaction", "imdb-sentiment", "imdb-ending", "bio"]
         assert config["groups"]["imdb"]["tables"]["reviews"]["id_col"] == "review_id"
         assert config["usd_per_hour"] == 3.0
         assert client.get("/data/imdb").json() == {"reviews": [{"id": "review-0"}]}
@@ -234,7 +234,7 @@ def test_prewarm_tokenizes_every_prepared_demo(data_dir, tiny_tables, capsys):
     assert set(metrics._document_tokens) == {
         ("qwen3-reranker-0.6b-bf16", "imdb"), (QWEN3_4B, "imdb")}
     printed = capsys.readouterr().out
-    assert "prewarm bio-4: LookupError" in printed
+    assert "prewarm bio: LookupError" in printed
     assert "prewarm compaction: LookupError" in printed
 
 

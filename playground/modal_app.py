@@ -186,7 +186,7 @@ def server_class(cls):
 
 @server_class
 class Qwen3Server:
-    """Quail Server for qwen3-4b-fp8: the IMDB ending query and BIO-4."""
+    """Quail Server for qwen3-4b-fp8: the IMDB ending query and BIO."""
 
     @modal.enter()
     def start(self):

@@ -91,7 +91,7 @@ def test_write_group_names_files_by_content_and_lists_uploads(tmp_path, tiny_tab
     prepare.write_manifest(root, {"imdb": {"tables": {}, "page": "imdb.json"}})
     manifest = prepare.read_manifest(root)
     assert set(manifest["groups"]) == {"bio", "imdb"}, "groups accumulate"
-    prepared = prepare.uploads_for(demo("bio-4"), manifest["groups"], root)
+    prepared = prepare.uploads_for(demo("bio"), manifest["groups"], root)
     assert [item.spec["columns"] for item in prepared] == [
         ["id", "report"], ["id", "term"]]
     assert [item.content_id for item in prepared] == [
