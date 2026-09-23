@@ -304,3 +304,5 @@ canvas.review-cells { border: 0; }
 .traj-bar .box.hot { border-color: var(--primary); }
 .traj-after { color: var(--muted); white-space: nowrap; }
 .traj-after b { color: var(--primary); font-weight: 500; }
+.info { color: var(--primary); cursor: help; white-space: nowrap; }
+.info:hover { text-decoration: underline; }

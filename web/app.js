@@ -647,6 +647,41 @@ function card(value, label, sub, pending) {
     sub ? el("div", { class: "card-sub" }, sub) : null);
 }
 
+// OpenAI API prices per 1M tokens, September 2026
+const GPT5_NANO = { input: 0.05, cached: 0.005, output: 0.40 };
+
+function nanoEstimate(m) {
+  if (!m || !m.complete || typeof m.input_tokens !== "number"
+      || typeof m.fresh_tokens !== "number") return null;
+  const cached = Math.max(0, m.kv_read_tokens || 0);
+  const fresh = m.input_tokens - cached;
+  const calls = m.model_calls || 0;
+  const output = calls * GPT5_NANO.output / 1e6;
+  return {
+    fresh, cached, calls,
+    withCache: fresh * GPT5_NANO.input / 1e6 + cached * GPT5_NANO.cached / 1e6 + output,
+    noCache: m.input_tokens * GPT5_NANO.input / 1e6 + output,
+  };
+}
+
+function costSub(m, price) {
+  const text = `one H100 at $${price}/h`;
+  const nano = nanoEstimate(m);
+  if (!nano) return text;
+  const info = el("span", { class: "info", tabindex: "0" }, "ⓘ gpt-5-nano");
+  hoverTip(info, () => [
+    `gpt-5-nano: ${fmtUsd(nano.withCache)} with prompt caching`,
+    `${fmtCompact(nano.fresh)} input × $${GPT5_NANO.input}/1M + ${fmtCompact(nano.cached)} cached ` +
+      `input × $${GPT5_NANO.cached}/1M + ${fmtInt(nano.calls)} calls × 1 output token × ` +
+      `$${GPT5_NANO.output}/1M`,
+    `${fmtUsd(nano.noCache)} with no cache hits: all ${fmtCompact(m.input_tokens)} requested ` +
+      `input tokens at $${GPT5_NANO.input}/1M`,
+    `This run cost ${fmtUsd(m.gpu_cost_usd)} on the H100. The estimate assumes OpenAI's prompt ` +
+      "cache hits the same prefixes Quail read from KV, and counts no reasoning tokens.",
+  ]);
+  return el("span", {}, text, " ", info);
+}
+
 function renderCards(run, metrics) {
   const demo = state.demo;
   const price = state.config.usd_per_hour;
@@ -676,7 +711,7 @@ function renderCards(run, metrics) {
       ? "not measured" : (metrics ? fmtCompact(m.regret_tokens) : null);
     cards.push(card(v(wall === null ? null : fmtSeconds(wall)), "query time on the GPU",
       throughput, false));
-    cards.push(card(v(cost === null ? null : fmtUsd(cost)), "GPU cost", `one H100 at $${price}/h`, false));
+    cards.push(card(v(cost === null ? null : fmtUsd(cost)), "GPU cost", costSub(m, price), false));
     cards.push(card(v(metrics ? fmtCompact(m.input_tokens) : null), "requested input tokens",
       kvSplit, !metrics));
     cards.push(card(v(metrics ? fmtCompact(m.fresh_tokens) : null), "fresh input tokens computed",
@@ -706,7 +741,7 @@ function renderCards(run, metrics) {
       "",
       !metrics || m.complete === false));
     cards.push(card(v(cost === null ? null : fmtUsd(cost)), "GPU cost",
-      `one H100 at $${price}/h`, false));
+      costSub(m, price), false));
     cards.push(card(outputValue, outputLabel, "", false));
   }
   $("cards").replaceChildren(...cards);

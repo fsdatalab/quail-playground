@@ -202,6 +202,7 @@ def test_metrics_use_the_saved_answer_tables(data_dir, monkeypatch, tiny_tables)
         assert result["tokens_per_second"] == result["input_tokens"] / 4.0
         assert result["gpu_cost_usd"] == pytest.approx(4.0 / 3600 * 3.0)
         assert result["output_rows"] == 2 and result["cached_tokens"] == 20
+        assert result["model_calls"] == 5
         assert described == [custom_sql]
         # computed once; a second read is the remembered result
         fake._files = {}

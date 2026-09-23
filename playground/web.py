@@ -374,8 +374,12 @@ class Metrics:
                 description, output, tables, id_cols, documents=documents)
         result = regret.metrics(report, numbers, gpus=int(status.config["gpus"]),
                                 usd_per_hour=self.settings.usd_per_hour)
+        # one answer table row per question the model was asked
+        model_calls = (sum(table.num_rows for table in filters.values())
+                       + sum(table.num_rows for _, table in joins.values()))
         result.update(query_id=query_id, model=model, demo=demo_key,
-                      output_rows=status.result["rows"], complete=True)
+                      output_rows=status.result["rows"], model_calls=model_calls,
+                      complete=True)
         with self._lock:
             self._results[key] = result
             self._partials.pop(key, None)
