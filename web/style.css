@@ -227,9 +227,22 @@ textarea.sql:disabled { color: var(--muted); background: var(--subtle); }
 .swatch.outline { background: #fff; border: 1px solid var(--gray-3); }
 .ramp { display: inline-block; width: 4rem; height: .7rem; vertical-align: -.1em; background: linear-gradient(90deg, #f1e3e6, var(--primary)); }
 
-.grid-layout { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
+.viz-caption { margin: 0 0 .35rem; font-size: .8rem; color: var(--foreground); }
+.grid-layout { display: grid; grid-template-columns: minmax(0, 34rem) minmax(0, 1fr); gap: 1.25rem; align-items: start; }
 .grid-rows { min-width: 0; }
-canvas.cells { width: 100%; image-rendering: pixelated; border: 1px solid var(--border); }
+.grid-stream .stream { max-height: 32rem; }
+canvas.cells { width: 100%; image-rendering: pixelated; border: 1px solid var(--border); cursor: crosshair; }
+canvas.review-cells { border: 0; }
+.cell-tip {
+  display: none; position: fixed; z-index: 20; max-width: 22rem; padding: .4rem .55rem;
+  background: var(--card, #fff); border: 1px solid var(--border); border-radius: .35rem;
+  box-shadow: 0 4px 14px rgba(0,0,0,.12); font-size: .75rem; pointer-events: none;
+}
+.cell-tip-head { font: 500 .72rem/1.4 var(--font-mono); }
+.cell-tip div + div { color: var(--muted); margin-top: .15rem; }
+@media (max-width: 52rem) {
+  .grid-layout, .matrix-layout, .traj-cols { grid-template-columns: minmax(0, 1fr); }
+}
 .stream-title { color: var(--muted); font-size: .78rem; margin: 0 0 .4rem; }
 .stream { display: flex; flex-direction: column; gap: .35rem; max-height: 26rem; overflow: auto; }
 .doc { padding: .35rem .6rem; border-left: 3px solid var(--primary); background: var(--card); }

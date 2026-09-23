@@ -42,6 +42,34 @@ function el(tag, attrs, ...children) {
   return node;
 }
 
+let cellTip = null;
+
+// describe(x, y) gets canvas pixel coordinates and returns the lines to
+// show, or null over empty space
+function hoverTip(target, describe) {
+  if (!cellTip) {
+    cellTip = el("div", { class: "cell-tip" });
+    document.body.append(cellTip);
+  }
+  target.addEventListener("mousemove", (event) => {
+    const box = target.getBoundingClientRect();
+    const scaleX = target.width ? target.width / box.width : 1;
+    const scaleY = target.height ? target.height / box.height : 1;
+    const lines = describe((event.clientX - box.left) * scaleX,
+      (event.clientY - box.top) * scaleY, event);
+    if (!lines) { cellTip.style.display = "none"; return; }
+    cellTip.replaceChildren(...lines.map((line, index) =>
+      el("div", { class: index === 0 ? "cell-tip-head" : "" }, line)));
+    cellTip.style.display = "block";
+    const left = Math.min(event.clientX + 14, window.innerWidth - cellTip.offsetWidth - 8);
+    const top = event.clientY + 14 + cellTip.offsetHeight > window.innerHeight
+      ? event.clientY - cellTip.offsetHeight - 10 : event.clientY + 14;
+    cellTip.style.left = `${left}px`;
+    cellTip.style.top = `${top}px`;
+  });
+  target.addEventListener("mouseleave", () => { cellTip.style.display = "none"; });
+}
+
 function fmtInt(n) {
   return n === null || n === undefined ? "—" : Math.round(n).toLocaleString("en-US");
 }
@@ -799,12 +827,12 @@ function formatCell(value) {
   return text.length > 300 ? `${text.slice(0, 299)}…` : text;
 }
 
-// One cell per review: 5,000 labeled negative, then 5,000 positive.
+// One square per review, in table order.
 class ReviewGrid {
   constructor(demo, data) {
     this.demo = demo;
     this.reviews = data.reviews;
-    this.cols = 200;
+    this.cols = 100;
     this.rows = Math.ceil(this.reviews.length / this.cols);
     this.score = demo.view === "score";
     this.stages = (demo.hints && demo.hints.stages) || ["question 1", "question 2"];
@@ -857,8 +885,42 @@ class ReviewGrid {
     if (this.countsNode) this.renderCounts();
   }
 
+  static PITCH = 6;      // a 5 pixel square and a 1 pixel gap
+
+  cellAt(x, y) {
+    const { PITCH } = ReviewGrid;
+    const col = Math.floor(x / PITCH), row = Math.floor(y / PITCH);
+    const index = row * this.cols + col;
+    if (col < 0 || col >= this.cols || row < 0 || index >= this.reviews.length) return null;
+    return index;
+  }
+
+  describeCell(index) {
+    const review = this.reviews[index];
+    let status;
+    if (this.score) {
+      const score = this.scores[index];
+      status = score < 0 ? "not scored yet"
+        : `score ${score.toFixed(3)}, ${this.passes(score) ? "passes" : "fails"} ${this.comparison} ${this.cut}`;
+    } else {
+      status = ["waiting", `failed "${this.stages[0]}"`,
+        `passed "${this.stages[0]}", failed "${this.stages[1]}"`, "passed both"][this.cells[index]];
+    }
+    return [review.id, status, review.head];
+  }
+
   init(container) {
-    this.canvas = el("canvas", { class: "cells", width: this.cols, height: this.rows });
+    const { PITCH } = ReviewGrid;
+    const width = this.cols * PITCH - 1;
+    const height = this.rows * PITCH - 1;
+    this.canvas = el("canvas", { class: "cells review-cells", width, height,
+      style: `aspect-ratio: ${width} / ${height}` });
+    hoverTip(this.canvas, (x, y) => {
+      const index = this.cellAt(x, y);
+      return index === null ? null : this.describeCell(index);
+    });
+    const caption = `Each square is one review, ${fmtInt(this.reviews.length)} in all, ` +
+      "colored as the query answers it. Hover over a square to read the review.";
     this.list = el("div", { class: "stream" });
     this.countsNode = el("span", { class: "counts" });
     this.listTitle = el("p", { class: "stream-title" });
@@ -871,11 +933,11 @@ class ReviewGrid {
          el("span", {}, el("span", { class: "swatch", style: "background:#8c8c8c" }), `passed "${this.stages[0]}", failed "${this.stages[1]}"`),
          el("span", {}, el("span", { class: "swatch", style: "background:#c31331" }), "passed both")];
     container.replaceChildren(
+      el("p", { class: "viz-caption" }, caption),
       el("div", { class: "legend" }, ...legend, this.countsNode),
       el("div", { class: "grid-layout" },
-        el("div", { class: "grid-rows" },
-          this.canvas),
-        el("div", {}, this.listTitle, this.list)));
+        el("div", { class: "grid-rows" }, this.canvas),
+        el("div", { class: "grid-stream" }, this.listTitle, this.list)));
     this.draw();
     this.renderList();
     this.renderCounts();
@@ -923,8 +985,8 @@ class ReviewGrid {
 
   draw() {
     const context = this.canvas.getContext("2d");
-    const image = context.createImageData(this.cols, this.rows);
-    const pixels = image.data;
+    const { PITCH } = ReviewGrid;
+    context.clearRect(0, 0, this.canvas.width, this.canvas.height);
     const palette = [[236, 236, 236], [210, 210, 210], [140, 140, 140], [195, 19, 49]];
     for (let i = 0; i < this.reviews.length; i++) {
       let color;
@@ -939,11 +1001,10 @@ class ReviewGrid {
       } else {
         color = palette[this.cells[i]];
       }
-      const offset = i * 4;
-      pixels[offset] = color[0]; pixels[offset + 1] = color[1];
-      pixels[offset + 2] = color[2]; pixels[offset + 3] = 255;
+      context.fillStyle = `rgb(${color[0]},${color[1]},${color[2]})`;
+      const row = Math.floor(i / this.cols);
+      context.fillRect((i % this.cols) * PITCH, row * PITCH, PITCH - 1, PITCH - 1);
     }
-    context.putImageData(image, 0, 0);
   }
 
   renderList() {
@@ -961,10 +1022,9 @@ class ReviewGrid {
     }
     this.list.replaceChildren(...latest.map((row) => {
       const review = this.reviews[row];
-      const label = review.label ? "labeled positive" : "labeled negative";
       const extra = this.score ? `, score ${this.scores[row].toFixed(2)}` : "";
-      return el("div", { class: "doc" + (review.label ? "" : " neg") },
-        el("div", { class: "doc-head" }, `${review.id}, ${label}${extra}`),
+      return el("div", { class: "doc" },
+        el("div", { class: "doc-head" }, `${review.id}${extra}`),
         el("div", { class: "doc-text" }, review.head));
     }));
   }
@@ -1018,6 +1078,7 @@ class ReportMatrix {
     const R = this.reports.length, T = this.terms.length, G = ReportMatrix.GUTTER;
     this.canvas = el("canvas", { class: "cells", width: T + G, height: R + G,
       style: `aspect-ratio: ${T + G} / ${R + G}` });
+    hoverTip(this.canvas, (x, y) => this.describeCell(Math.floor(x), Math.floor(y)));
     this.stageNodes = {};
     const stage = (key, label) => {
       const value = el("b", {}, "—");
@@ -1027,6 +1088,11 @@ class ReportMatrix {
     this.results = el("div", {});
     this.resultsTitle = el("div", { class: "results-title" });
     container.replaceChildren(
+      el("p", { class: "viz-caption" },
+        `Each row is one report (${fmtInt(R)}) and each column one reaction term ` +
+        `(${fmtInt(T)}), so each cell is one report × term pair. The strips on the left ` +
+        "show each report's filter answer and KV state; the strip on top shows each " +
+        "term's filter answers. Hover to see the report and term."),
       el("div", { class: "stages" },
         stage("reports", `${this.filterLabels.r || "serious"} reports`),
         stage("neuro", `${this.filterLabels.n || "neurological"} terms`),
@@ -1127,6 +1193,37 @@ class ReportMatrix {
     } catch (error) {
       logEvent(run, `join tables unavailable: ${error.message}`);
     }
+  }
+
+  describeCell(x, y) {
+    const R = this.reports.length, T = this.terms.length, G = ReportMatrix.GUTTER;
+    const serious = this.filterLabels.r || "serious";
+    const reportLine = (r) => {
+      const s = this.rowState[r];
+      return s === 2 ? `passed "${serious}"` : s === 1 ? `failed "${serious}"` : "not filtered yet";
+    };
+    const termLine = (t) => {
+      const bits = this.colState[t];
+      if (!(bits & 4)) return "not filtered yet";
+      const passed = [bits & 1 ? this.joinLabels.n : null, bits & 2 ? this.joinLabels.c : null]
+        .filter(Boolean);
+      return passed.length ? `passed the ${passed.join(" and ")} filter` : "failed both term filters";
+    };
+    if (y >= G && y < G + R && x < G) {
+      const r = y - G, report = this.reports[r];
+      const kv = ["never loaded", "prefix in KV", "prefix evicted", "prefix computed again"][this.kv[r]];
+      return [`report ${report.id}`, x < 5 ? reportLine(r) : kv, report.head];
+    }
+    if (x >= G && x < G + T && y < G) {
+      const t = x - G;
+      return [`term ${this.terms[t].id}: ${this.terms[t].term}`, termLine(t)];
+    }
+    if (x < G || y < G || x >= G + T || y >= G + R) return null;
+    const r = y - G, t = x - G, bits = this.cells[r * T + t];
+    const match = bits === 3 ? `${this.joinLabels.n} and ${this.joinLabels.c} match`
+      : bits === 1 ? `${this.joinLabels.n} match` : bits === 2 ? `${this.joinLabels.c} match`
+        : "no match recorded";
+    return [`report ${this.reports[r].id} × term "${this.terms[t].term}"`, match, reportLine(r)];
   }
 
   counts() {
@@ -1259,6 +1356,10 @@ class Trajectories {
       return { bar, boxes, after };
     });
     container.replaceChildren(
+      el("p", { class: "viz-caption" },
+        `Each row is one agent trace (${fmtInt(this.conversations.length)} in all) and each ` +
+        "box is one tool call in it, as wide as the call's output tokens. Hover over a box " +
+        "to see the call."),
       el("div", { class: "legend" },
         el("span", {}, el("span", { class: "swatch outline" }), "waiting"),
         el("span", {}, el("span", { class: "swatch", style: "background:#c31331" }), "keep"),
