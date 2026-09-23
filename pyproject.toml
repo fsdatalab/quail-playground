@@ -24,8 +24,8 @@ dev = [
 ]
 
 [tool.uv.sources]
-quail-engine = { git = "https://github.com/fsdatalab/quail.git", rev = "09c40b3cae37f9ea6cfb917361073452ea850ef9" }
-quail-b = { git = "https://github.com/fsdatalab/quail-bench.git", rev = "35d026dc2f5b5c1e787268173e81e512b749081a" }
+quail-engine = { git = "https://github.com/fsdatalab/quail.git", rev = "ace9e5b3a319109a628a13c044700d596ff86dac" }
+quail-b = { git = "https://github.com/fsdatalab/quail-bench.git", rev = "a3b6f91079b65ea1420f2233c6855f6af3b96ceb" }
 
 [tool.uv]
 # the same uv the Modal image syncs with
