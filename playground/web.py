@@ -193,7 +193,9 @@ class Metrics:
             cached = self._document_tokens.get(key)
             document_lock = self._document_locks.get(key)
         if cached is None:
-            candidate = regret.DocumentTokens(tables, self._tokenizer(model))
+            id_cols = {spec.name: spec.id_col for spec in item.tables}
+            candidate = regret.DocumentTokens(
+                regret.corpus_rows(tables, id_cols), self._tokenizer(model))
             with self._lock:
                 cached = self._document_tokens.setdefault(key, candidate)
                 document_lock = self._document_locks.setdefault(
