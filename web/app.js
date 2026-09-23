@@ -775,6 +775,7 @@ class ReviewGrid {
     this.canvas = el("canvas", { class: "cells", width: this.cols, height: this.rows });
     this.list = el("div", { class: "stream" });
     this.countsNode = el("span", { class: "counts" });
+    this.listTitle = el("p", { class: "stream-title" });
     const legend = this.score
       ? [el("span", {}, el("span", { class: "swatch", style: "background:#ececec" }), "waiting"),
          el("span", {}, "score 0 ", el("span", { class: "ramp" }), " 1 (0.5 is the cut)")]
@@ -787,10 +788,7 @@ class ReviewGrid {
       el("div", { class: "grid-layout" },
         el("div", { class: "grid-rows" },
           this.canvas),
-        el("div", {},
-          el("p", { class: "stream-title" },
-            this.score ? "positive reviews as they are scored" : "reviews that passed both questions"),
-          this.list)));
+        el("div", {}, this.listTitle, this.list)));
     this.draw();
     this.renderList();
     this.renderCounts();
@@ -862,7 +860,13 @@ class ReviewGrid {
   }
 
   renderList() {
-    const latest = this.stream.slice(-30).reverse();
+    const shown = 30;
+    const total = this.stream.length;
+    const noun = this.score ? "positive reviews" : "reviews that passed both questions";
+    this.listTitle.textContent = total > shown
+      ? `the ${shown} most recent of ${fmtInt(total)} ${noun}`
+      : total ? `all ${fmtInt(total)} ${noun}` : noun;
+    const latest = this.stream.slice(-shown).reverse();
     if (!latest.length) {
       this.list.replaceChildren(el("p", { class: "empty" }, "nothing has passed yet"));
       return;
