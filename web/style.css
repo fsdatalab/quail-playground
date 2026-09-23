@@ -60,6 +60,8 @@ button.primary:hover:not(:disabled) { background: #a5102a; border-color: #a5102a
 .brand { display: flex; flex-direction: column; line-height: 1.2; }
 .brand-name { font-weight: 600; }
 .brand-sub { color: var(--muted); font-size: .72rem; }
+.brand-sub a { color: inherit; text-decoration: underline; text-underline-offset: 2px; }
+.brand-sub a:hover { color: var(--primary); }
 .tabs { display: flex; gap: .25rem; }
 .tab {
   padding: .3rem .7rem;

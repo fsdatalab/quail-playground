@@ -687,7 +687,9 @@ function costSub(m, price) {
 
 function regretSub(m) {
   if (!m.regret_tokens || !m.fresh_tokens) return "fresh tokens a better plan would not compute";
-  return `${pct(m.regret_tokens, m.fresh_tokens)} of the fresh tokens a better plan would not compute`;
+  const share = 100 * m.regret_tokens / m.fresh_tokens;
+  return `${share < 10 ? share.toFixed(1) : Math.round(share)}% of the fresh tokens; ` +
+    "a better plan would not compute them";
 }
 
 // seconds the query has run on the GPU, frozen once it ends
