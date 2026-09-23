@@ -72,6 +72,9 @@ class WebSettings:
         describe: Callable(model, demo, tables, anchors) ->
             ``regret.QueryDescription``; compiles the SQL on a CPU
             session when None. Tests replace both.
+        prewarm: Load every demo's tokenizer and tokenize its documents
+            on a thread when the page starts, so the first query after
+            a cold start does not wait for them.
 
     """
 
@@ -84,6 +87,7 @@ class WebSettings:
     client_factory: Callable | None = None
     tokenizer_factory: Callable | None = None
     describe: Callable | None = None
+    prewarm: bool = False
 
 
 def hf_tokenizer(model: str):
@@ -313,6 +317,19 @@ class Metrics:
         with document_lock:
             documents.fetch(keys)
 
+    def prewarm_all(self) -> None:
+        """Tokenize every demo's documents, one demo at a time."""
+        for item in DEMOS:
+            started = time.perf_counter()
+            try:
+                self._prewarm(item.model, item.key)
+            except Exception as error:  # noqa: BLE001 - a query retries it
+                print(f"prewarm {item.key}: {type(error).__name__}: {error}",
+                      flush=True)
+                continue
+            print(f"prewarm {item.key}: {time.perf_counter() - started:.1f} s",
+                  flush=True)
+
     def compute(self, model: str, query_id: str, demo_key: str) -> dict:
         item = demo(demo_key)
         key = (model, query_id, demo_key)
@@ -462,6 +479,9 @@ def create_web_app(settings: WebSettings) -> Starlette:
         "/static/app.js", f"/static/app.js?v={asset_version}")
     threading.Thread(target=_heartbeat, args=(started,), daemon=True,
                      name="page-heartbeat").start()
+    if settings.prewarm:
+        threading.Thread(target=metrics.prewarm_all, daemon=True,
+                         name="metrics-prewarm").start()
     client = httpx.AsyncClient(timeout=httpx.Timeout(
         PROXY_TIMEOUT_S, read=PROXY_TIMEOUT_S + MAX_WAIT_S))
 

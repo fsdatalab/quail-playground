@@ -293,7 +293,8 @@ def page():
         static_dir=STATIC_DIR, data_dir=DEMO_DATA_DIR,
         servers=deployed_server_urls(),
         token=server_token(),
-        usd_per_hour=H100_USD_PER_HOUR))
+        usd_per_hour=H100_USD_PER_HOUR,
+        prewarm=True))
 
 
 @app.local_entrypoint()
