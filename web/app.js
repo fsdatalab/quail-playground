@@ -672,9 +672,11 @@ function costSub(m, price) {
   const info = el("span", { class: "info", tabindex: "0" }, "ⓘ gpt-5-nano");
   hoverTip(info, () => [
     `gpt-5-nano: ${fmtUsd(nano.withCache)} with prompt caching`,
-    `${fmtCompact(nano.fresh)} input × $${GPT5_NANO.input}/1M + ${fmtCompact(nano.cached)} cached ` +
-      `input × $${GPT5_NANO.cached}/1M + ${fmtInt(nano.calls)} calls × 1 output token × ` +
+    `${fmtCompact(nano.fresh)} input tokens × $${GPT5_NANO.input}/1M + ${fmtCompact(nano.cached)} ` +
+      `cached input tokens × $${GPT5_NANO.cached}/1M + ${fmtInt(nano.calls)} output tokens × ` +
       `$${GPT5_NANO.output}/1M`,
+    `All prices are per token. Output is one token per model call (${fmtInt(nano.calls)} calls), ` +
+      "since each call answers with a single yes/no or score token.",
     `${fmtUsd(nano.noCache)} with no cache hits: all ${fmtCompact(m.input_tokens)} requested ` +
       `input tokens at $${GPT5_NANO.input}/1M`,
     `This run cost ${fmtUsd(m.gpu_cost_usd)} on the H100. The estimate assumes OpenAI's prompt ` +
