@@ -409,15 +409,10 @@ async function run() {
   $("progress").textContent = "";
   setState("queued");
   logEvent(run, "submitting the query");
-  let lastCardSecond = -1;
   const timer = setInterval(() => {
     const elapsed = (performance.now() - started) / 1000;
     $("timer").textContent = `${elapsed.toFixed(1)} s`;
-    const cardSecond = Math.floor(elapsed);
-    if (state.run === run && cardSecond !== lastCardSecond) {
-      lastCardSecond = cardSecond;
-      renderCards(run, run.metrics || null);
-    }
+    if (state.run === run) tickCards(run);
   }, 100);
   try {
     const body = {
@@ -506,6 +501,10 @@ function applyStatus(run, status) {
   run.revision = status.revision;
   if (status.state === "running" && run.executionStarted === undefined) {
     run.executionStarted = performance.now();
+  }
+  if (DONE.has(status.state) && run.executionStarted !== undefined
+      && run.executionEnded === undefined) {
+    run.executionEnded = performance.now();
   }
   setState(status.state);
   const phase = status.phase ? status.phase.name : null;
@@ -640,9 +639,11 @@ async function finishMetrics(run, viz) {
 
 // ---------- metric cards ----------
 
-function card(value, label, sub, pending) {
+function card(value, label, sub, pending, live) {
+  const attrs = { class: "card-value" + (pending ? " pending" : "") };
+  if (live) attrs["data-live"] = live;
   return el("div", { class: "card" },
-    el("div", { class: "card-value" + (pending ? " pending" : "") }, value),
+    el("div", attrs, value),
     el("div", { class: "card-label" }, label),
     sub ? el("div", { class: "card-sub" }, sub) : null);
 }
@@ -682,6 +683,24 @@ function costSub(m, price) {
   return el("span", {}, text, " ", info);
 }
 
+// seconds the query has run on the GPU, frozen once it ends
+function liveSeconds(run) {
+  if (!run || run.executionStarted === undefined) return null;
+  const end = run.executionEnded === undefined ? performance.now() : run.executionEnded;
+  return (end - run.executionStarted) / 1000;
+}
+
+// the query time and cost cards advance with the timer, between renders
+function tickCards(run) {
+  const seconds = liveSeconds(run);
+  if (seconds === null || (run.metrics && run.metrics.wall_s !== undefined)) return;
+  const wall = document.querySelector('[data-live="wall"]');
+  const cost = document.querySelector('[data-live="cost"]');
+  if (!wall || !cost) { renderCards(run, run.metrics || null); return; }
+  wall.textContent = fmtSeconds(seconds);
+  cost.textContent = fmtUsd(seconds / 3600 * state.config.usd_per_hour);
+}
+
 function renderCards(run, metrics) {
   const demo = state.demo;
   const price = state.config.usd_per_hour;
@@ -690,8 +709,7 @@ function renderCards(run, metrics) {
   // while the page computes the numbers of a finished query, the cards say so
   const waiting = run && run.computing && (!metrics || metrics.complete === false)
     ? (run.status && DONE.has(run.status.state) ? "computing…" : "running…") : "—";
-  const liveWall = run && run.executionStarted !== undefined
-    ? (performance.now() - run.executionStarted) / 1000 : null;
+  const liveWall = liveSeconds(run);
   const wall = metrics && m.wall_s !== undefined ? m.wall_s : liveWall;
   const cost = metrics && m.gpu_cost_usd !== undefined
     ? m.gpu_cost_usd : (liveWall === null ? null : liveWall / 3600 * price);
@@ -710,8 +728,8 @@ function renderCards(run, metrics) {
     const regret = metrics && m.regret_tokens === null && m.complete
       ? "not measured" : (metrics ? fmtCompact(m.regret_tokens) : null);
     cards.push(card(v(wall === null ? null : fmtSeconds(wall)), "query time on the GPU",
-      throughput, false));
-    cards.push(card(v(cost === null ? null : fmtUsd(cost)), "GPU cost", costSub(m, price), false));
+      throughput, false, "wall"));
+    cards.push(card(v(cost === null ? null : fmtUsd(cost)), "GPU cost", costSub(m, price), false, "cost"));
     cards.push(card(v(metrics ? fmtCompact(m.input_tokens) : null), "requested input tokens",
       kvSplit, !metrics));
     cards.push(card(v(metrics ? fmtCompact(m.fresh_tokens) : null), "fresh input tokens computed",
@@ -727,7 +745,7 @@ function renderCards(run, metrics) {
     const regret = metrics && m.regret_tokens === null && m.complete
       ? "not measured" : (metrics ? fmtCompact(m.regret_tokens) : null);
     cards.push(card(v(wall === null ? null : fmtSeconds(wall)), "query time on the GPU",
-      throughput, false));
+      throughput, false, "wall"));
     cards.push(card(v(metrics ? fmtCompact(m.input_tokens) : null), "requested input tokens",
       kvSplit,
       !metrics));
@@ -741,7 +759,7 @@ function renderCards(run, metrics) {
       "",
       !metrics || m.complete === false));
     cards.push(card(v(cost === null ? null : fmtUsd(cost)), "GPU cost",
-      costSub(m, price), false));
+      costSub(m, price), false, "cost"));
     cards.push(card(outputValue, outputLabel, "", false));
   }
   $("cards").replaceChildren(...cards);
