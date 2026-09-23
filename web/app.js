@@ -685,13 +685,6 @@ function costSub(m, price) {
   return el("span", {}, text, " ", info);
 }
 
-function regretSub(m) {
-  if (!m.regret_tokens || !m.fresh_tokens) return "fresh tokens a better plan would not compute";
-  const share = 100 * m.regret_tokens / m.fresh_tokens;
-  return `${share < 10 ? share.toFixed(1) : Math.round(share)}% of the fresh tokens; ` +
-    "a better plan would not compute them";
-}
-
 // seconds the query has run on the GPU, frozen once it ends
 function liveSeconds(run) {
   if (!run || run.executionStarted === undefined) return null;
@@ -743,8 +736,8 @@ function renderCards(run, metrics) {
       kvSplit, !metrics));
     cards.push(card(v(metrics ? fmtCompact(m.fresh_tokens) : null), "fresh input tokens computed",
       "", !metrics));
-    cards.push(card(v(regret), "avoidable tokens (KV regret)",
-      regretSub(m),
+    cards.push(card(v(regret), "avoidable recomputed tokens (KV regret)",
+      "",
       !metrics || m.complete === false));
     cards.push(card(live.before !== undefined ? `${fmtCompact(live.before)} → ${fmtCompact(live.after)}` : "—",
       "tool output tokens before → after",
@@ -764,8 +757,8 @@ function renderCards(run, metrics) {
     cards.push(card(v(metrics ? fmtCompact(m.fresh_tokens) : null), "fresh input tokens computed",
       "",
       !metrics));
-    cards.push(card(v(regret), "avoidable tokens (KV regret)",
-      regretSub(m),
+    cards.push(card(v(regret), "avoidable recomputed tokens (KV regret)",
+      "",
       !metrics || m.complete === false));
     cards.push(card(v(cost === null ? null : fmtUsd(cost)), "GPU cost",
       costSub(m, price), false, "cost"));
@@ -1439,17 +1432,19 @@ class Trajectories {
     container.replaceChildren(
       el("p", { class: "viz-caption" },
         el("b", {}, "Each row is one agent trace and each box is one tool call in it."),
-        ` There are ${fmtInt(this.conversations.length)} traces. For every call, the model ` +
-        "answers two questions: keep the full output (keep), keep only that the call " +
-        "happened (truncate its output), or neither (drop). The first message and the " +
-        "last 6 calls are always kept and aren't asked. A box is as wide as the call's " +
-        "output tokens. Hover over a box to see the call."),
+        ` There are ${fmtInt(this.conversations.length)} traces with ` +
+        `${fmtInt(this.conversations.reduce((n, c) => n + c.calls.length, 0))} tool calls. ` +
+        "For every call, the model answers two questions: keep the full output (keep), " +
+        "keep only that the call happened (truncate its output), or neither (drop). " +
+        "The last 3 calls of each trace (its last 6 messages) are always kept and " +
+        "aren't asked. A box is as wide as the call's output tokens. Hover over a box " +
+        "to see the call."),
       el("div", { class: "legend" },
         el("span", {}, el("span", { class: "swatch outline" }), "waiting"),
         el("span", {}, el("span", { class: "swatch", style: "background:#c31331" }), "keep"),
         el("span", {}, el("span", { class: "swatch", style: "background:#f6d3da" }), "truncate to 300 chars"),
         el("span", {}, el("span", { class: "swatch", style: "background:#ececec" }), "drop"),
-        el("span", {}, el("span", { class: "swatch", style: "background:#2a2828" }), "pinned: first message and last 6 calls"),
+        el("span", {}, el("span", { class: "swatch", style: "background:#2a2828" }), "pinned: the last 3 calls"),
         el("span", {}, "box width = tool output tokens"),
         el("span", {}, "gray line = length before"),
         this.countsNode),
