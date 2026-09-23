@@ -40,9 +40,15 @@ from playground.prepare import read_manifest
 # readiness ping while a container is still restoring
 PROXY_TIMEOUT_S = 120.0
 HEARTBEAT_S = 30.0
+# the Full Stack Data Lab logo, as fsdatalab.github.io serves it
 FAVICON_SVG = (
-    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16">'
-    '<rect width="16" height="16" rx="3" fill="#c31331"/></svg>'
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">'
+    '<rect width="100" height="100" rx="18" fill="#C41230"/>'
+    '<rect x="18" y="16" width="64" height="16" rx="3" fill="#fff"/>'
+    '<rect x="18" y="40" width="38" height="14" rx="3" fill="#fff"/>'
+    '<rect x="18" y="60" width="20" height="14" rx="3" fill="#fff"/>'
+    '<rect x="18" y="80" width="14" height="10" rx="3" fill="#fff"/>'
+    '</svg>'
 )
 # a long poll on a server holds for at most this long
 MAX_WAIT_S = 60.0
