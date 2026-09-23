@@ -1432,8 +1432,11 @@ class Trajectories {
     container.replaceChildren(
       el("p", { class: "viz-caption" },
         el("b", {}, "Each row is one agent trace and each box is one tool call in it."),
-        ` There are ${fmtInt(this.conversations.length)} traces; a box is as wide as ` +
-        "the call's output tokens. Hover over a box to see the call."),
+        ` There are ${fmtInt(this.conversations.length)} traces. For every call, the model ` +
+        "answers two questions: keep the full output (keep), keep only that the call " +
+        "happened (truncate its output), or neither (drop). The first message and the " +
+        "last 6 calls are always kept and aren't asked. A box is as wide as the call's " +
+        "output tokens. Hover over a box to see the call."),
       el("div", { class: "legend" },
         el("span", {}, el("span", { class: "swatch outline" }), "waiting"),
         el("span", {}, el("span", { class: "swatch", style: "background:#c31331" }), "keep"),

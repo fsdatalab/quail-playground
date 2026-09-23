@@ -191,8 +191,10 @@ DEMOS = (
         sql=COMPACTION_SQL,
         tables=(CONVERSATIONS, TOOL_QUESTIONS),
         view="compaction",
-        note=("The query finds the tool calls and tool results that should "
-              "remain when an agent trace is shortened."),
+        note=("Each conversation is a coding agent's trace, compacted to a summary "
+              "(state). Each tool call in it has two tool_questions: should the call "
+              "stay, and should its full output stay? The join asks the model both, "
+              "against that trace's summary."),
         hints={"source": OPENHANDS_SOURCE},
     ),
     Demo(
