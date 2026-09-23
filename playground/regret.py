@@ -226,21 +226,22 @@ def metrics(report: dict, numbers: dict, *, gpus: int,
     """Combine the report with the token counts into the page's numbers.
 
     Throughput divides requested input tokens by the query's wall time.
-    Tokens read from KV use the engine's cached token counter when it is
-    available, or requested minus fresh as a fallback. Before the slower
-    minimum calculation finishes, requested input tokens are fresh plus
-    cached. Cost is wall time in hours times the GPU count and hourly
-    price; model startup is excluded, as the wall time excludes it.
+    Tokens read from KV are requested minus fresh. The engine's cached
+    token counter only counts the reranker's and vLLM's prefix hits and
+    stays 0 for Quail's own filter and join KV reuse, so it stands in for
+    the requested count only before the slower minimum calculation
+    finishes, and only when it is above 0. Cost is wall time in hours
+    times the GPU count and hourly price; model startup is excluded, as
+    the wall time excludes it.
     """
     wall_s = float(report["wall_s"])
     requested = numbers.get("input_tokens")
     fresh = report.get("fresh_tokens")
     cached = report.get("cached_tokens")
     if (not isinstance(requested, int) and isinstance(fresh, int)
-            and isinstance(cached, int)):
+            and isinstance(cached, int) and cached > 0):
         requested = fresh + cached
-    kv_read = (cached if isinstance(cached, int) else
-               requested - fresh if isinstance(requested, int)
+    kv_read = (requested - fresh if isinstance(requested, int)
                and isinstance(fresh, int) else None)
     return {
         "wall_s": wall_s,
