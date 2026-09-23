@@ -68,9 +68,9 @@ IMDB_SENTIMENT_SQL = """\
 SELECT r.review_id, r.review
 FROM reviews AS r
 WHERE AI.SCORE(
-    PROMPT('Did the reviewer enjoy the movie? Would they recommend it?\\n\\n{0}',
+    PROMPT('Did the reviewer feel very strongly about the movie?\\n\\n{0}',
            r.review)
-) >= 0.2
+) >= 0.1
 """
 
 IMDB_ENDING_SQL = """\
@@ -185,15 +185,14 @@ TOOL_QUESTIONS = Table(
 DEMOS = (
     Demo(
         key="imdb-sentiment",
-        title="IMDB, sentiment",
+        title="IMDB, strong feelings",
         group="imdb",
         model=RERANKER,
         sql=IMDB_SENTIMENT_SQL,
         tables=(REVIEWS,),
         view="score",
-        note=("The query scores whether each reviewer enjoyed the movie and "
-              "would recommend it. A score of 0.2 or higher counts as "
-              "positive."),
+        note=("The query scores how strongly each reviewer feels about the "
+              "movie. A score of 0.1 or higher passes."),
         hints={"source": IMDB_SOURCE},
     ),
     Demo(

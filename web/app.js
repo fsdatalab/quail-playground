@@ -851,9 +851,9 @@ class ReviewGrid {
     this.rows = Math.ceil(this.reviews.length / this.cols);
     this.score = demo.view === "score";
     this.stages = (demo.hints && demo.hints.stages) || ["question 1", "question 2"];
-    this.outputLabel = this.score ? "positive reviews" : "passed both";
+    this.outputLabel = this.score ? "reviews that passed" : "passed both";
     this.comparison = ">=";
-    this.cut = 0.2;
+    this.cut = 0.1;
     this.reset();
   }
 
@@ -1029,8 +1029,8 @@ class ReviewGrid {
   renderList() {
     const shown = 30;
     const total = this.stream.length;
-    const noun = this.custom ? "reviews that passed"
-      : this.score ? "positive reviews" : "reviews that passed both questions";
+    const noun = this.custom || this.score ? "reviews that passed"
+      : "reviews that passed both questions";
     this.listTitle.textContent = total > shown
       ? `the ${shown} most recent of ${fmtInt(total)} ${noun}`
       : total ? `all ${fmtInt(total)} ${noun}` : noun;
@@ -1050,9 +1050,8 @@ class ReviewGrid {
 
   renderCounts() {
     const total = this.reviews.length;
-    const [yes, no] = this.custom ? ["passed", "failed"] : ["positive", "negative"];
     this.countsNode.textContent = this.score
-      ? `${fmtCompact(this.passed)} ${yes}, ${fmtCompact(this.finished - this.passed)} ${no}, ` +
+      ? `${fmtCompact(this.passed)} passed, ${fmtCompact(this.finished - this.passed)} failed, ` +
         `${fmtCompact(this.finished)} / ${fmtCompact(total)} scored`
       : `${fmtCompact(this.passed)} passed both, ${fmtCompact(this.passedFirst)} passed "${this.stages[0]}", ` +
         `${fmtCompact(this.finished)} / ${fmtCompact(total)} finished`;
