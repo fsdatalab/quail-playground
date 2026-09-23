@@ -131,8 +131,12 @@ main { padding: .75rem 1rem 3rem; }
   grid-template-columns: 1fr 1fr;
   gap: .75rem;
   margin-top: .75rem;
-  align-items: start;
+  align-items: stretch;
 }
+/* the query pane sets the row height; the plan and events scroll inside it */
+.split > .pane + .pane { height: 0; min-height: 100%; }
+.split > .pane + .pane pre,
+.split > .pane + .pane .events { flex: 1 1 0; min-height: 0; max-height: none; }
 .pane {
   display: flex;
   flex-direction: column;
@@ -241,7 +245,9 @@ canvas.review-cells { border: 0; }
 .cell-tip-head { font: 500 .72rem/1.4 var(--font-mono); }
 .cell-tip div + div { color: var(--muted); margin-top: .15rem; }
 @media (max-width: 52rem) {
-  .grid-layout, .matrix-layout, .traj-cols { grid-template-columns: minmax(0, 1fr); }
+  .split, .grid-layout, .matrix-layout, .traj-cols { grid-template-columns: minmax(0, 1fr); }
+  .split > .pane + .pane { height: auto; min-height: 0; }
+  .split > .pane + .pane pre, .split > .pane + .pane .events { flex: 0 1 auto; max-height: 16rem; }
 }
 .stream-title { color: var(--muted); font-size: .78rem; margin: 0 0 .4rem; }
 .stream { display: flex; flex-direction: column; gap: .35rem; max-height: 26rem; overflow: auto; }

@@ -593,9 +593,21 @@ async function finishMetrics(run, viz) {
     // the page computes the numbers on a thread; 202 means not yet
     const started = performance.now();
     while (performance.now() - started < METRICS_LIMIT_MS) {
-      const response = await fetch(`/metrics/${run.model}/${run.id}?demo=${run.demo.key}`);
+      let response = null, data = null;
+      try {
+        response = await fetch(`/metrics/${run.model}/${run.id}?demo=${run.demo.key}`);
+        data = await response.json();
+      } catch (error) {
+        data = null;
+      }
+      // a restarting page container drops the connection or the gateway
+      // answers for it without the page's JSON; the new container computes
+      // the numbers again
+      if (!response || data === null || (response.status >= 500 && !data.error)) {
+        await new Promise((resolve) => setTimeout(resolve, 2000));
+        continue;
+      }
       if (response.status === 202) {
-        const data = await response.json();
         if (data.metrics) {
           metrics = data.metrics;
           run.metrics = metrics;
@@ -604,7 +616,6 @@ async function finishMetrics(run, viz) {
         await new Promise((resolve) => setTimeout(resolve, 1000));
         continue;
       }
-      const data = await response.json();
       if (!response.ok) throw new Error(data.error ? data.error.message : `HTTP ${response.status}`);
       metrics = data;
       run.metrics = metrics;
