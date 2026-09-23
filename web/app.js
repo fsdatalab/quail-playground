@@ -362,7 +362,8 @@ async function run() {
     $("sql").value = sql;
     state.sqlByDemo[demo.key] = sql;
   }
-  state.viz = custom ? new QueryResults() : makeViz(demo, state.data[demo.group]);
+  const main = makeViz(demo, state.data[demo.group]);
+  state.viz = custom ? new CustomQuery(main) : main;
   state.viz.init($("viz"));
   const started = performance.now();
   const run = { demo, model: demo.model, id: null, revision: 0, seen: 0, done: false,
@@ -487,6 +488,7 @@ function applyStatus(run, status) {
   if (status.plan && status.plan.text && !$("plan").textContent) {
     $("plan").textContent = status.plan.text;
     logEvent(run, `planned; the planner expects ${fmtSeconds(status.plan.estimated_seconds)}`);
+    if (state.viz.onPlan) state.viz.onPlan(status.plan);
   }
   if (status.progress && status.progress.label) {
     const p = status.progress;
@@ -571,7 +573,7 @@ async function finishMetrics(run, viz) {
           run.metrics = metrics;
           if (state.run === run && state.viz === viz) renderCards(run, metrics);
         }
-        await new Promise((resolve) => setTimeout(resolve, 2000));
+        await new Promise((resolve) => setTimeout(resolve, 1000));
         continue;
       }
       const data = await response.json();
@@ -740,10 +742,61 @@ class QueryResults {
   }
 }
 
+// An edited query: the demo's visual, fed by the answer stream, above
+// the rows the query returned.
+class CustomQuery {
+  constructor(main) {
+    this.main = main;
+    this.main.custom = true;
+    if (this.main.stages) this.main.stages = ["question 1", "question 2"];
+    this.results = new QueryResults();
+    this.outputLabel = this.results.outputLabel;
+  }
+
+  reset() {
+    this.main.reset();
+    this.results.reset();
+  }
+
+  init(container) {
+    const mainNode = el("div", {});
+    const resultsNode = el("div", { class: "custom-results" });
+    container.replaceChildren(mainNode, resultsNode);
+    this.main.init(mainNode);
+    this.results.init(resultsNode);
+  }
+
+  onPlan(plan) {
+    if (this.main.onPlan) this.main.onPlan(plan);
+  }
+
+  onProgress(progress) {
+    this.main.onProgress(progress);
+  }
+
+  onAnswers(entries) {
+    this.main.onAnswers(entries);
+  }
+
+  async onFinished(run, extra) {
+    try {
+      await this.main.onFinished(run, extra);
+    } catch (error) {
+      logEvent(run, `the visual could not finish: ${error.message}`);
+    }
+    await this.results.onFinished(run);
+  }
+
+  counts() {
+    return this.results.counts();
+  }
+}
+
 function formatCell(value) {
   if (value === null || value === undefined) return "NULL";
-  if (typeof value === "object") return JSON.stringify(value);
-  return String(value);
+  const text = typeof value === "object" ? JSON.stringify(value) : String(value);
+  // the download has the full values
+  return text.length > 300 ? `${text.slice(0, 299)}…` : text;
 }
 
 // One cell per review: 5,000 labeled negative, then 5,000 positive.
@@ -756,7 +809,40 @@ class ReviewGrid {
     this.score = demo.view === "score";
     this.stages = (demo.hints && demo.hints.stages) || ["question 1", "question 2"];
     this.outputLabel = this.score ? "positive reviews" : "passed both";
+    this.comparison = ">=";
+    this.cut = 0.2;
     this.reset();
+  }
+
+  passes(score) {
+    const cut = this.cut;
+    switch (this.comparison) {
+      case ">": return score > cut;
+      case "<": return score < cut;
+      case "<=": return score <= cut;
+      default: return score >= cut;
+    }
+  }
+
+  cutText() {
+    return ` 1 (passes at score ${this.comparison} ${this.cut})`;
+  }
+
+  // the score filter's comparison and threshold come from the query's plan
+  onPlan(plan) {
+    const graph = plan && plan.envelope && plan.envelope.graph;
+    const node = graph && graph.nodes.find((item) => item.type === "quail.score_filter");
+    if (!node) return;
+    this.comparison = node.attributes.comparison;
+    this.cut = node.attributes.threshold;
+    this.passed = 0;
+    this.stream = [];
+    this.scores.forEach((score, row) => {
+      if (score >= 0 && this.passes(score)) { this.passed += 1; this.stream.push(row); }
+    });
+    if (this.cutNode) this.cutNode.textContent = this.cutText();
+    if (this.list) this.renderList();
+    if (this.countsNode) this.renderCounts();
   }
 
   reset() {
@@ -776,9 +862,10 @@ class ReviewGrid {
     this.list = el("div", { class: "stream" });
     this.countsNode = el("span", { class: "counts" });
     this.listTitle = el("p", { class: "stream-title" });
+    this.cutNode = el("span", {}, this.cutText());
     const legend = this.score
       ? [el("span", {}, el("span", { class: "swatch", style: "background:#ececec" }), "waiting"),
-         el("span", {}, "score 0 ", el("span", { class: "ramp" }), " 1 (0.5 is the cut)")]
+         el("span", {}, "score 0 ", el("span", { class: "ramp" }), this.cutNode)]
       : [el("span", {}, el("span", { class: "swatch", style: "background:#ececec" }), "waiting"),
          el("span", {}, el("span", { class: "swatch", style: "background:#d2d2d2" }), `failed "${this.stages[0]}"`),
          el("span", {}, el("span", { class: "swatch", style: "background:#8c8c8c" }), `passed "${this.stages[0]}", failed "${this.stages[1]}"`),
@@ -819,7 +906,7 @@ class ReviewGrid {
           const score = entry.scores[index];
           if (this.scores[r] < 0) this.finished += 1;
           this.scores[r] = score;
-          if (score >= 0.5) { this.passed += 1; this.stream.push(r); }
+          if (this.passes(score)) { this.passed += 1; this.stream.push(r); }
         });
       }
     }
@@ -862,7 +949,8 @@ class ReviewGrid {
   renderList() {
     const shown = 30;
     const total = this.stream.length;
-    const noun = this.score ? "positive reviews" : "reviews that passed both questions";
+    const noun = this.custom ? "reviews that passed"
+      : this.score ? "positive reviews" : "reviews that passed both questions";
     this.listTitle.textContent = total > shown
       ? `the ${shown} most recent of ${fmtInt(total)} ${noun}`
       : total ? `all ${fmtInt(total)} ${noun}` : noun;
@@ -883,8 +971,9 @@ class ReviewGrid {
 
   renderCounts() {
     const total = this.reviews.length;
+    const [yes, no] = this.custom ? ["passed", "failed"] : ["positive", "negative"];
     this.countsNode.textContent = this.score
-      ? `${fmtCompact(this.passed)} positive, ${fmtCompact(this.finished - this.passed)} negative, ` +
+      ? `${fmtCompact(this.passed)} ${yes}, ${fmtCompact(this.finished - this.passed)} ${no}, ` +
         `${fmtCompact(this.finished)} / ${fmtCompact(total)} scored`
       : `${fmtCompact(this.passed)} passed both, ${fmtCompact(this.passedFirst)} passed "${this.stages[0]}", ` +
         `${fmtCompact(this.finished)} / ${fmtCompact(total)} finished`;

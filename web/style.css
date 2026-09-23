@@ -244,6 +244,7 @@ canvas.cells { width: 100%; image-rendering: pixelated; border: 1px solid var(--
 .result-table th { position: sticky; top: 0; background: var(--card); font-weight: 600; }
 .result-table tr:last-child td { border-bottom: 0; }
 .result-note { margin: 0 0 .45rem; color: var(--muted); font-size: .75rem; }
+.custom-results { margin-top: 1rem; }
 
 .stages { display: flex; gap: 1.25rem; flex-wrap: wrap; margin-bottom: .6rem; }
 .stage {
