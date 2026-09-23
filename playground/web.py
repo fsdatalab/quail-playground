@@ -375,7 +375,7 @@ class Metrics:
             self._partials.pop(key, None)
         return result
 
-    def preview(self, model: str, query_id: str, limit: int = 100) -> dict:
+    def preview(self, model: str, query_id: str, limit: int = 1000) -> dict:
         """Return the first result rows of a finished query as JSON values."""
         client = self._client(model)
         status = client.status(query_id)

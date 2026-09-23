@@ -12,7 +12,7 @@ const POLL_WAIT_S = 25;
 const SERVER_START_LIMIT_MS = 20 * 60 * 1000;
 const METRICS_LIMIT_MS = 15 * 60 * 1000;
 const ANSWERS_PAGE = 5000;
-const CUSTOM_QUERY_LIMIT = 100;
+const CUSTOM_QUERY_LIMIT = 1000;
 
 const state = {
   config: null,
@@ -664,15 +664,21 @@ function renderCards(run, metrics) {
   const outputLabel = state.viz ? state.viz.outputLabel : "output rows";
   const outputValue = run && run.status && run.status.result
     ? fmtInt(run.status.result.rows) : (live.output === undefined ? "—" : fmtInt(live.output));
+  // the same throughput line under the query time in every view
+  const throughput = m.tokens_per_second
+    ? `${fmtInt(m.tokens_per_second)} tokens/second` : "excluding model startup";
+  const kvSplit = m.kv_read_tokens !== undefined && m.kv_read_tokens !== null
+    && m.fresh_tokens !== undefined
+    ? `${fmtCompact(m.kv_read_tokens)} from KV + ${fmtCompact(m.fresh_tokens)} fresh` : "";
   if (demo.view === "compaction") {
     const v = (value) => (value === undefined || value === null || value === "—") ? waiting : value;
     const regret = metrics && m.regret_tokens === null && m.complete
       ? "not measured" : (metrics ? fmtCompact(m.regret_tokens) : null);
     cards.push(card(v(wall === null ? null : fmtSeconds(wall)), "query time on the GPU",
-      "excluding model startup", false));
+      throughput, false));
     cards.push(card(v(cost === null ? null : fmtUsd(cost)), "GPU cost", `one H100 at $${price}/h`, false));
     cards.push(card(v(metrics ? fmtCompact(m.input_tokens) : null), "requested input tokens",
-      m.tokens_per_second ? `${fmtInt(m.tokens_per_second)} tokens/second` : "", !metrics));
+      kvSplit, !metrics));
     cards.push(card(v(metrics ? fmtCompact(m.fresh_tokens) : null), "fresh input tokens computed",
       "", !metrics));
     cards.push(card(v(regret), "avoidable computation (KV regret)",
@@ -686,11 +692,9 @@ function renderCards(run, metrics) {
     const regret = metrics && m.regret_tokens === null && m.complete
       ? "not measured" : (metrics ? fmtCompact(m.regret_tokens) : null);
     cards.push(card(v(wall === null ? null : fmtSeconds(wall)), "query time on the GPU",
-      m.tokens_per_second ? `${fmtInt(m.tokens_per_second)} requested tokens/second` : "excluding model startup",
-      false));
+      throughput, false));
     cards.push(card(v(metrics ? fmtCompact(m.input_tokens) : null), "requested input tokens",
-      m.kv_read_tokens !== undefined && m.kv_read_tokens !== null && m.fresh_tokens !== undefined
-        ? `${fmtCompact(m.kv_read_tokens)} from KV + ${fmtCompact(m.fresh_tokens)} fresh` : "",
+      kvSplit,
       !metrics));
     cards.push(card(v(metrics ? fmtCompact(m.kv_read_tokens) : null), "tokens read from KV",
       m.kv_read_tokens && m.input_tokens ? `${pct(m.kv_read_tokens, m.input_tokens)} of the requested input` : "",
