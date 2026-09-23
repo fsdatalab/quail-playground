@@ -70,6 +70,11 @@ button.primary:hover:not(:disabled) { background: #a5102a; border-color: #a5102a
 }
 .tab.active { background: var(--foreground); color: #fff; }
 .top-right { margin-left: auto; display: flex; gap: 1rem; align-items: center; font-size: .8rem; }
+.star-link {
+  padding: .25rem .6rem; border: 1px solid var(--primary); border-radius: .35rem;
+  color: var(--primary); font-weight: 500; text-decoration: none;
+}
+.star-link:hover { background: var(--primary); color: #fff; }
 .server-state { color: var(--muted); font-family: var(--font-mono); font-size: .75rem; }
 .server-state.ready { color: var(--success); }
 .server-state.starting { color: var(--warning); }
