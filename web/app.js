@@ -930,8 +930,10 @@ class ReviewGrid {
       const index = this.cellAt(x, y);
       return index === null ? null : this.describeCell(index);
     });
-    const caption = `Each square is one review, ${fmtInt(this.reviews.length)} in all, ` +
-      "colored as the query answers it. Hover over a square to read the review.";
+    const caption = [el("b", {}, "Each square is one review (one document)."),
+      ` There are ${fmtInt(this.reviews.length)} squares, one per row of the reviews ` +
+      "table, and each is colored by the query's answer for that review. " +
+      "Hover over a square to read the review."];
     this.list = el("div", { class: "stream" });
     this.countsNode = el("span", { class: "counts" });
     this.listTitle = el("p", { class: "stream-title" });
@@ -944,8 +946,10 @@ class ReviewGrid {
          el("span", {}, el("span", { class: "swatch", style: "background:#8c8c8c" }), `passed "${this.stages[0]}", failed "${this.stages[1]}"`),
          el("span", {}, el("span", { class: "swatch", style: "background:#c31331" }), "passed both")];
     container.replaceChildren(
-      el("p", { class: "viz-caption" }, caption),
-      el("div", { class: "legend" }, ...legend, this.countsNode),
+      el("p", { class: "viz-caption" }, ...caption),
+      el("div", { class: "legend" },
+        el("span", {}, el("span", { class: "swatch outline" }), "1 square = 1 review"),
+        ...legend, this.countsNode),
       el("div", { class: "grid-layout" },
         el("div", { class: "grid-rows" }, this.canvas),
         el("div", { class: "grid-stream" }, this.listTitle, this.list)));
@@ -1100,8 +1104,9 @@ class ReportMatrix {
     this.resultsTitle = el("div", { class: "results-title" });
     container.replaceChildren(
       el("p", { class: "viz-caption" },
-        `Each row is one report (${fmtInt(R)}) and each column one reaction term ` +
-        `(${fmtInt(T)}), so each cell is one report × term pair. The strips on the left ` +
+        el("b", {}, "Each row is one report and each column is one reaction term."),
+        ` There are ${fmtInt(R)} rows and ${fmtInt(T)} columns, so each cell is one ` +
+        "report × term pair the join can ask about. The strips on the left " +
         "show each report's filter answer and KV state; the strip on top shows each " +
         "term's filter answers. Hover to see the report and term."),
       el("div", { class: "stages" },
@@ -1368,9 +1373,9 @@ class Trajectories {
     });
     container.replaceChildren(
       el("p", { class: "viz-caption" },
-        `Each row is one agent trace (${fmtInt(this.conversations.length)} in all) and each ` +
-        "box is one tool call in it, as wide as the call's output tokens. Hover over a box " +
-        "to see the call."),
+        el("b", {}, "Each row is one agent trace and each box is one tool call in it."),
+        ` There are ${fmtInt(this.conversations.length)} traces; a box is as wide as ` +
+        "the call's output tokens. Hover over a box to see the call."),
       el("div", { class: "legend" },
         el("span", {}, el("span", { class: "swatch outline" }), "waiting"),
         el("span", {}, el("span", { class: "swatch", style: "background:#c31331" }), "keep"),
