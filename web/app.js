@@ -685,6 +685,11 @@ function costSub(m, price) {
   return el("span", {}, text, " ", info);
 }
 
+function regretSub(m) {
+  if (!m.regret_tokens || !m.fresh_tokens) return "fresh tokens a better plan would not compute";
+  return `${pct(m.regret_tokens, m.fresh_tokens)} of the fresh tokens a better plan would not compute`;
+}
+
 // seconds the query has run on the GPU, frozen once it ends
 function liveSeconds(run) {
   if (!run || run.executionStarted === undefined) return null;
@@ -736,8 +741,8 @@ function renderCards(run, metrics) {
       kvSplit, !metrics));
     cards.push(card(v(metrics ? fmtCompact(m.fresh_tokens) : null), "fresh input tokens computed",
       "", !metrics));
-    cards.push(card(v(regret), "avoidable computation (KV regret)",
-      "",
+    cards.push(card(v(regret), "avoidable tokens (KV regret)",
+      regretSub(m),
       !metrics || m.complete === false));
     cards.push(card(live.before !== undefined ? `${fmtCompact(live.before)} → ${fmtCompact(live.after)}` : "—",
       "tool output tokens before → after",
@@ -757,8 +762,8 @@ function renderCards(run, metrics) {
     cards.push(card(v(metrics ? fmtCompact(m.fresh_tokens) : null), "fresh input tokens computed",
       "",
       !metrics));
-    cards.push(card(v(regret), "avoidable computation (KV regret)",
-      "",
+    cards.push(card(v(regret), "avoidable tokens (KV regret)",
+      regretSub(m),
       !metrics || m.complete === false));
     cards.push(card(v(cost === null ? null : fmtUsd(cost)), "GPU cost",
       costSub(m, price), false, "cost"));
