@@ -55,10 +55,10 @@ so run the command again before a scheduled demo.
 
 | Demo | Query | Data | Model |
 | --- | --- | --- | --- |
-| IMDB sentiment | Score whether each reviewer enjoyed and recommends the movie | 10,000 IMDB reviews | `qwen3-reranker-0.6b-bf16` |
-| IMDB ending and recommendation | Find reviews that discuss the ending and recommend the movie | 10,000 IMDB reviews | `qwen3-4b-fp8` |
-| BIO-4 | Find serious reports with both a neurological and a cardiovascular reaction | 500 reports and 1,127 reaction terms | `qwen3-4b-fp8` |
 | Agent trace compaction | Decide which tool calls and results to keep in a shorter agent trace | 100 OpenHands trajectories and 6,554 questions | `diffusion-gemma-26b-a4b-fp8` |
+| IMDB strong feelings | Score how strongly each reviewer feels about the movie (0.1 or higher passes) | 10,000 IMDB reviews | `qwen3-reranker-0.6b-bf16` |
+| IMDB ending and recommendation | Find reviews that discuss the ending and recommend the movie | 10,000 IMDB reviews | `qwen3-4b-fp8` |
+| BIO | Find serious reports with both a neurological and a cardiovascular reaction | 500 reports and 1,127 reaction terms | `qwen3-4b-fp8` |
 
 ## How it runs
 

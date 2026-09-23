@@ -5,6 +5,9 @@
 <title>Quail playground</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="light">
+<link rel="icon" type="image/svg+xml" href="/favicon.ico">
+<link rel="icon" type="image/png" sizes="32x32" href="/static/favicon-32.png">
+<link rel="apple-touch-icon" sizes="180x180" href="/static/apple-touch-icon.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&amp;family=Inter:wght@400;500;600&amp;display=swap" rel="stylesheet">
@@ -14,13 +17,13 @@
 <header class="top">
   <div class="brand">
     <span class="brand-name">Quail playground</span>
-    <span class="brand-sub">Full Stack Data Lab, runs on Modal</span>
+    <span class="brand-sub"><a href="https://fsdatalab.github.io" target="_blank" rel="noopener">Full Stack Data Lab</a>, runs on <a href="https://modal.com" target="_blank" rel="noopener">Modal</a></span>
   </div>
   <nav id="nav" class="tabs" aria-label="Demo areas" role="tablist"></nav>
   <div class="top-right">
     <span id="server-state" class="server-state">—</span>
-    <a href="https://github.com/fsdatalab/quail">Quail</a>
-    <a href="https://github.com/fsdatalab/quail-playground">GitHub</a>
+    <a href="https://github.com/fsdatalab/quail-playground">Playground code</a>
+    <a class="star-link" href="https://github.com/fsdatalab/quail">&#9733; Star Quail on GitHub</a>
   </div>
 </header>
 <main>
@@ -48,7 +51,7 @@
       <textarea id="sql" class="sql" aria-label="SQL query" spellcheck="false"></textarea>
       <p class="note">
         <span><span class="note-label">Default query explanation:</span> <span id="note"></span></span>
-        <em class="query-limit-note">If you edit the query and enter no LIMIT, we will apply LIMIT 100, so the page returns at most 100 rows.</em>
+        <em class="query-limit-note">If you edit the query and enter no LIMIT, we will apply LIMIT 1000, so the page returns at most 1,000 rows.</em>
       </p>
     </div>
     <div class="pane">

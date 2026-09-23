@@ -40,9 +40,15 @@ from playground.prepare import read_manifest
 # readiness ping while a container is still restoring
 PROXY_TIMEOUT_S = 120.0
 HEARTBEAT_S = 30.0
+# the Full Stack Data Lab logo, traced from fsdatalab.github.io's PNG icon
 FAVICON_SVG = (
-    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16">'
-    '<rect width="16" height="16" rx="3" fill="#c31331"/></svg>'
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">'
+    '<rect width="100" height="100" rx="18" fill="#C41230"/>'
+    '<rect x="18" y="16" width="64" height="15" rx="3" fill="#fff"/>'
+    '<rect x="18" y="33.5" width="32" height="15" rx="3" fill="#fff"/>'
+    '<rect x="18" y="51" width="16" height="15" rx="3" fill="#fff"/>'
+    '<rect x="18" y="69" width="16" height="15" rx="3" fill="#fff"/>'
+    '</svg>'
 )
 # a long poll on a server holds for at most this long
 MAX_WAIT_S = 60.0
@@ -72,6 +78,9 @@ class WebSettings:
         describe: Callable(model, demo, tables, anchors) ->
             ``regret.QueryDescription``; compiles the SQL on a CPU
             session when None. Tests replace both.
+        prewarm: Load every demo's tokenizer and tokenize its documents
+            on a thread when the page starts, so the first query after
+            a cold start does not wait for them.
 
     """
 
@@ -84,6 +93,7 @@ class WebSettings:
     client_factory: Callable | None = None
     tokenizer_factory: Callable | None = None
     describe: Callable | None = None
+    prewarm: bool = False
 
 
 def hf_tokenizer(model: str):
@@ -193,7 +203,9 @@ class Metrics:
             cached = self._document_tokens.get(key)
             document_lock = self._document_locks.get(key)
         if cached is None:
-            candidate = regret.DocumentTokens(tables, self._tokenizer(model))
+            id_cols = {spec.name: spec.id_col for spec in item.tables}
+            candidate = regret.DocumentTokens(
+                regret.corpus_rows(tables, id_cols), self._tokenizer(model))
             with self._lock:
                 cached = self._document_tokens.setdefault(key, candidate)
                 document_lock = self._document_locks.setdefault(
@@ -311,6 +323,19 @@ class Metrics:
         with document_lock:
             documents.fetch(keys)
 
+    def prewarm_all(self) -> None:
+        """Tokenize every demo's documents, one demo at a time."""
+        for item in DEMOS:
+            started = time.perf_counter()
+            try:
+                self._prewarm(item.model, item.key)
+            except Exception as error:  # noqa: BLE001 - a query retries it
+                print(f"prewarm {item.key}: {type(error).__name__}: {error}",
+                      flush=True)
+                continue
+            print(f"prewarm {item.key}: {time.perf_counter() - started:.1f} s",
+                  flush=True)
+
     def compute(self, model: str, query_id: str, demo_key: str) -> dict:
         item = demo(demo_key)
         key = (model, query_id, demo_key)
@@ -349,14 +374,18 @@ class Metrics:
                 description, output, tables, id_cols, documents=documents)
         result = regret.metrics(report, numbers, gpus=int(status.config["gpus"]),
                                 usd_per_hour=self.settings.usd_per_hour)
+        # one answer table row per question the model was asked
+        model_calls = (sum(table.num_rows for table in filters.values())
+                       + sum(table.num_rows for _, table in joins.values()))
         result.update(query_id=query_id, model=model, demo=demo_key,
-                      output_rows=status.result["rows"], complete=True)
+                      output_rows=status.result["rows"], model_calls=model_calls,
+                      complete=True)
         with self._lock:
             self._results[key] = result
             self._partials.pop(key, None)
         return result
 
-    def preview(self, model: str, query_id: str, limit: int = 100) -> dict:
+    def preview(self, model: str, query_id: str, limit: int = 1000) -> dict:
         """Return the first result rows of a finished query as JSON values."""
         client = self._client(model)
         status = client.status(query_id)
@@ -460,6 +489,9 @@ def create_web_app(settings: WebSettings) -> Starlette:
         "/static/app.js", f"/static/app.js?v={asset_version}")
     threading.Thread(target=_heartbeat, args=(started,), daemon=True,
                      name="page-heartbeat").start()
+    if settings.prewarm:
+        threading.Thread(target=metrics.prewarm_all, daemon=True,
+                         name="metrics-prewarm").start()
     client = httpx.AsyncClient(timeout=httpx.Timeout(
         PROXY_TIMEOUT_S, read=PROXY_TIMEOUT_S + MAX_WAIT_S))
 

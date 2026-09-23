@@ -1,7 +1,7 @@
 """The four demo queries: their SQL, model, inputs, and how they are drawn.
 
 Every query runs on Quail Server. The SQL is the BigQuery dialect the
-docs use. Selectivity hints on the BIO-4 query are the quail-bench
+docs use. Selectivity hints on the BIO query are the quail-bench
 estimates for its predicates; the IMDB hints are the ones the
 repository's IMDB demo uses.
 """
@@ -18,7 +18,7 @@ GEMMA = "diffusion-gemma-26b-a4b-fp8"
 # one H100 per model; the order is the order the page lists them
 MODELS = (QWEN3_4B, RERANKER, GEMMA)
 
-# the reaction pairing prompt of BIO-4, asked by both joins
+# the reaction pairing prompt of BIO, asked by both joins
 REACTION_PROMPT = (
     "Does the medical report in DOCUMENT {0} describe the reaction in "
     "DOCUMENT {1} as something the patient experienced?"
@@ -36,7 +36,7 @@ CARDIOVASCULAR_PROMPT = (
     "Is this reaction cardiovascular, affecting the heart or blood vessels? {0}"
 )
 
-# quail-bench selectivity estimates for the BIO-4 predicates, at the
+# quail-bench selectivity estimates for the BIO predicates, at the
 # benchmark's labeled sample: 319 of 500 serious reports, 505 and 394 of
 # 1,127 terms, 19,144 of 563,500 report-term pairs
 SERIOUS_SELECTIVITY = round(319 / 500, 4)
@@ -65,16 +65,16 @@ OPENHANDS_SOURCE = {
 }
 
 IMDB_SENTIMENT_SQL = """\
-SELECT r.review_id
+SELECT r.review_id, r.review
 FROM reviews AS r
 WHERE AI.SCORE(
-    PROMPT('Did the reviewer enjoy the movie? Would they recommend it?\\n\\n{0}',
+    PROMPT('Did the reviewer feel very strongly about the movie?\\n\\n{0}',
            r.review)
-) >= 0.5
+) >= 0.1
 """
 
 IMDB_ENDING_SQL = """\
-SELECT r.review_id
+SELECT r.review_id, r.review
 FROM reviews AS r
 WHERE AI.IF(
     PROMPT('Does this review discuss the ending of the movie?\\n\\n{0}',
@@ -88,7 +88,7 @@ AND AI.IF(
 )
 """
 
-BIO4_SQL = f"""\
+BIO_SQL = f"""\
 SELECT r.id, n.id, c.id
 FROM reports AS r
 JOIN terms AS n
@@ -184,16 +184,29 @@ TOOL_QUESTIONS = Table(
 
 DEMOS = (
     Demo(
+        key="compaction",
+        title="Agent trace compaction",
+        group="compaction",
+        model=GEMMA,
+        sql=COMPACTION_SQL,
+        tables=(CONVERSATIONS, TOOL_QUESTIONS),
+        view="compaction",
+        note=("Each conversation is a coding agent's trace, compacted to a summary "
+              "(state). Each tool call in it has two tool_questions: should the call "
+              "stay, and should its full output stay? The join asks the model both, "
+              "against that trace's summary."),
+        hints={"source": OPENHANDS_SOURCE},
+    ),
+    Demo(
         key="imdb-sentiment",
-        title="IMDB, sentiment",
+        title="IMDB, strong feelings",
         group="imdb",
         model=RERANKER,
         sql=IMDB_SENTIMENT_SQL,
         tables=(REVIEWS,),
         view="score",
-        note=("The query scores whether each reviewer enjoyed the movie and "
-              "would recommend it. A score of 0.5 or higher counts as "
-              "positive."),
+        note=("The query scores how strongly each reviewer feels about the "
+              "movie. A score of 0.1 or higher passes."),
         hints={"source": IMDB_SOURCE},
     ),
     Demo(
@@ -210,11 +223,11 @@ DEMOS = (
                "source": IMDB_SOURCE},
     ),
     Demo(
-        key="bio-4",
-        title="BIO-4, serious reports with two reactions",
+        key="bio",
+        title="BIO, serious reports with two reactions",
         group="bio",
         model=QWEN3_4B,
-        sql=BIO4_SQL,
+        sql=BIO_SQL,
         tables=(REPORTS, TERMS),
         view="join",
         note=("The query finds serious or life-threatening medical reports "
@@ -225,18 +238,6 @@ DEMOS = (
                            "c": "cardiovascular reaction"},
                "joins": {"n": "neurological", "c": "cardiovascular"},
                "source": BIODEX_SOURCE},
-    ),
-    Demo(
-        key="compaction",
-        title="Agent trace compaction",
-        group="compaction",
-        model=GEMMA,
-        sql=COMPACTION_SQL,
-        tables=(CONVERSATIONS, TOOL_QUESTIONS),
-        view="compaction",
-        note=("The query finds the tool calls and tool results that should "
-              "remain when an agent trace is shortened."),
-        hints={"source": OPENHANDS_SOURCE},
     ),
 )
 

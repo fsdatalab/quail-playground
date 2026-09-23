@@ -173,6 +173,19 @@ def run_output(description: QueryDescription, report: dict,
                      prompt_pieces=description.pieces)
 
 
+def corpus_rows(tables: dict, id_cols: dict) -> dict:
+    """The input tables with each id column renamed to ``id`` for quail-bench."""
+    rows = {}
+    for name, table in tables.items():
+        id_col = id_cols[name]
+        if id_col != "id":
+            table = table.rename_columns(
+                ["id" if column == id_col else column
+                 for column in table.column_names])
+        rows[name] = table
+    return rows
+
+
 def token_numbers(description: QueryDescription, output: RunOutput,
                   tables: dict, id_cols: dict, tokenizer=None,
                   documents: DocumentTokens | None = None) -> dict:
@@ -188,22 +201,16 @@ def token_numbers(description: QueryDescription, output: RunOutput,
         documents: A reusable ``DocumentTokens`` store. When supplied,
             documents already tokenized by an earlier query are reused.
     """
-    corpus_rows = {}
-    for relation in description.info.relations:
-        table = tables[relation.table]
-        id_col = id_cols[relation.table]
-        if id_col != "id":
-            table = table.rename_columns(
-                ["id" if name == id_col else name for name in table.column_names])
-        corpus_rows[relation.table] = table
+    names = {relation.table for relation in description.info.relations}
+    rows = corpus_rows({name: tables[name] for name in names}, id_cols)
     stores = None
     if documents is not None:
         stores = {description.pieces["tokenizer"]: documents}
     elif tokenizer is not None:
         stores = {description.pieces["tokenizer"]:
-                  DocumentTokens(corpus_rows, tokenizer)}
+                  DocumentTokens(rows, tokenizer)}
     try:
-        return token_metrics(description, output, corpus_rows, stores)
+        return token_metrics(description, output, rows, stores)
     except ValueError as error:
         # fresh tokens below the minimum: the engine's count and the
         # benchmark's definition disagree, so no regret is reported
@@ -219,21 +226,22 @@ def metrics(report: dict, numbers: dict, *, gpus: int,
     """Combine the report with the token counts into the page's numbers.
 
     Throughput divides requested input tokens by the query's wall time.
-    Tokens read from KV use the engine's cached token counter when it is
-    available, or requested minus fresh as a fallback. Before the slower
-    minimum calculation finishes, requested input tokens are fresh plus
-    cached. Cost is wall time in hours times the GPU count and hourly
-    price; model startup is excluded, as the wall time excludes it.
+    Tokens read from KV are requested minus fresh. The engine's cached
+    token counter only counts the reranker's and vLLM's prefix hits and
+    stays 0 for Quail's own filter and join KV reuse, so it stands in for
+    the requested count only before the slower minimum calculation
+    finishes, and only when it is above 0. Cost is wall time in hours
+    times the GPU count and hourly price; model startup is excluded, as
+    the wall time excludes it.
     """
     wall_s = float(report["wall_s"])
     requested = numbers.get("input_tokens")
     fresh = report.get("fresh_tokens")
     cached = report.get("cached_tokens")
     if (not isinstance(requested, int) and isinstance(fresh, int)
-            and isinstance(cached, int)):
+            and isinstance(cached, int) and cached > 0):
         requested = fresh + cached
-    kv_read = (cached if isinstance(cached, int) else
-               requested - fresh if isinstance(requested, int)
+    kv_read = (requested - fresh if isinstance(requested, int)
                and isinstance(fresh, int) else None)
     return {
         "wall_s": wall_s,

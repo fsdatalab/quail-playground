@@ -186,7 +186,7 @@ def server_class(cls):
 
 @server_class
 class Qwen3Server:
-    """Quail Server for qwen3-4b-fp8: the IMDB ending query and BIO-4."""
+    """Quail Server for qwen3-4b-fp8: the IMDB ending query and BIO."""
 
     @modal.enter()
     def start(self):
@@ -293,7 +293,8 @@ def page():
         static_dir=STATIC_DIR, data_dir=DEMO_DATA_DIR,
         servers=deployed_server_urls(),
         token=server_token(),
-        usd_per_hour=H100_USD_PER_HOUR))
+        usd_per_hour=H100_USD_PER_HOUR,
+        prewarm=True))
 
 
 @app.local_entrypoint()

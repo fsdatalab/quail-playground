@@ -12,7 +12,7 @@ const POLL_WAIT_S = 25;
 const SERVER_START_LIMIT_MS = 20 * 60 * 1000;
 const METRICS_LIMIT_MS = 15 * 60 * 1000;
 const ANSWERS_PAGE = 5000;
-const CUSTOM_QUERY_LIMIT = 100;
+const CUSTOM_QUERY_LIMIT = 1000;
 
 const state = {
   config: null,
@@ -40,6 +40,34 @@ function el(tag, attrs, ...children) {
     node.append(child.nodeType ? child : document.createTextNode(String(child)));
   }
   return node;
+}
+
+let cellTip = null;
+
+// describe(x, y) gets canvas pixel coordinates and returns the lines to
+// show, or null over empty space
+function hoverTip(target, describe) {
+  if (!cellTip) {
+    cellTip = el("div", { class: "cell-tip" });
+    document.body.append(cellTip);
+  }
+  target.addEventListener("mousemove", (event) => {
+    const box = target.getBoundingClientRect();
+    const scaleX = target.width ? target.width / box.width : 1;
+    const scaleY = target.height ? target.height / box.height : 1;
+    const lines = describe((event.clientX - box.left) * scaleX,
+      (event.clientY - box.top) * scaleY, event);
+    if (!lines) { cellTip.style.display = "none"; return; }
+    cellTip.replaceChildren(...lines.map((line, index) =>
+      el("div", { class: index === 0 ? "cell-tip-head" : "" }, line)));
+    cellTip.style.display = "block";
+    const left = Math.min(event.clientX + 14, window.innerWidth - cellTip.offsetWidth - 8);
+    const top = event.clientY + 14 + cellTip.offsetHeight > window.innerHeight
+      ? event.clientY - cellTip.offsetHeight - 10 : event.clientY + 14;
+    cellTip.style.left = `${left}px`;
+    cellTip.style.top = `${top}px`;
+  });
+  target.addEventListener("mouseleave", () => { cellTip.style.display = "none"; });
 }
 
 function fmtInt(n) {
@@ -362,7 +390,8 @@ async function run() {
     $("sql").value = sql;
     state.sqlByDemo[demo.key] = sql;
   }
-  state.viz = custom ? new QueryResults() : makeViz(demo, state.data[demo.group]);
+  const main = makeViz(demo, state.data[demo.group]);
+  state.viz = custom ? new CustomQuery(main) : main;
   state.viz.init($("viz"));
   const started = performance.now();
   const run = { demo, model: demo.model, id: null, revision: 0, seen: 0, done: false,
@@ -380,15 +409,10 @@ async function run() {
   $("progress").textContent = "";
   setState("queued");
   logEvent(run, "submitting the query");
-  let lastCardSecond = -1;
   const timer = setInterval(() => {
     const elapsed = (performance.now() - started) / 1000;
     $("timer").textContent = `${elapsed.toFixed(1)} s`;
-    const cardSecond = Math.floor(elapsed);
-    if (state.run === run && cardSecond !== lastCardSecond) {
-      lastCardSecond = cardSecond;
-      renderCards(run, run.metrics || null);
-    }
+    if (state.run === run) tickCards(run);
   }, 100);
   try {
     const body = {
@@ -478,6 +502,10 @@ function applyStatus(run, status) {
   if (status.state === "running" && run.executionStarted === undefined) {
     run.executionStarted = performance.now();
   }
+  if (DONE.has(status.state) && run.executionStarted !== undefined
+      && run.executionEnded === undefined) {
+    run.executionEnded = performance.now();
+  }
   setState(status.state);
   const phase = status.phase ? status.phase.name : null;
   if (phase && phase !== run.phase) {
@@ -487,6 +515,7 @@ function applyStatus(run, status) {
   if (status.plan && status.plan.text && !$("plan").textContent) {
     $("plan").textContent = status.plan.text;
     logEvent(run, `planned; the planner expects ${fmtSeconds(status.plan.estimated_seconds)}`);
+    if (state.viz.onPlan) state.viz.onPlan(status.plan);
   }
   if (status.progress && status.progress.label) {
     const p = status.progress;
@@ -563,18 +592,29 @@ async function finishMetrics(run, viz) {
     // the page computes the numbers on a thread; 202 means not yet
     const started = performance.now();
     while (performance.now() - started < METRICS_LIMIT_MS) {
-      const response = await fetch(`/metrics/${run.model}/${run.id}?demo=${run.demo.key}`);
+      let response = null, data = null;
+      try {
+        response = await fetch(`/metrics/${run.model}/${run.id}?demo=${run.demo.key}`);
+        data = await response.json();
+      } catch (error) {
+        data = null;
+      }
+      // a restarting page container drops the connection or the gateway
+      // answers for it without the page's JSON; the new container computes
+      // the numbers again
+      if (!response || data === null || (response.status >= 500 && !data.error)) {
+        await new Promise((resolve) => setTimeout(resolve, 2000));
+        continue;
+      }
       if (response.status === 202) {
-        const data = await response.json();
         if (data.metrics) {
           metrics = data.metrics;
           run.metrics = metrics;
           if (state.run === run && state.viz === viz) renderCards(run, metrics);
         }
-        await new Promise((resolve) => setTimeout(resolve, 2000));
+        await new Promise((resolve) => setTimeout(resolve, 1000));
         continue;
       }
-      const data = await response.json();
       if (!response.ok) throw new Error(data.error ? data.error.message : `HTTP ${response.status}`);
       metrics = data;
       run.metrics = metrics;
@@ -599,11 +639,68 @@ async function finishMetrics(run, viz) {
 
 // ---------- metric cards ----------
 
-function card(value, label, sub, pending) {
+function card(value, label, sub, pending, live) {
+  const attrs = { class: "card-value" + (pending ? " pending" : "") };
+  if (live) attrs["data-live"] = live;
   return el("div", { class: "card" },
-    el("div", { class: "card-value" + (pending ? " pending" : "") }, value),
+    el("div", attrs, value),
     el("div", { class: "card-label" }, label),
     sub ? el("div", { class: "card-sub" }, sub) : null);
+}
+
+// OpenAI API prices per 1M tokens, September 2026
+const GPT5_NANO = { input: 0.05, cached: 0.005, output: 0.40 };
+
+function nanoEstimate(m) {
+  if (!m || !m.complete || typeof m.input_tokens !== "number"
+      || typeof m.fresh_tokens !== "number") return null;
+  const cached = Math.max(0, m.kv_read_tokens || 0);
+  const fresh = m.input_tokens - cached;
+  const calls = m.model_calls || 0;
+  const output = calls * GPT5_NANO.output / 1e6;
+  return {
+    fresh, cached, calls,
+    withCache: fresh * GPT5_NANO.input / 1e6 + cached * GPT5_NANO.cached / 1e6 + output,
+    noCache: m.input_tokens * GPT5_NANO.input / 1e6 + output,
+  };
+}
+
+function costSub(m, price) {
+  const text = `one H100 at $${price}/h`;
+  const nano = nanoEstimate(m);
+  if (!nano) return text;
+  const info = el("span", { class: "info", tabindex: "0" }, "ⓘ gpt-5-nano");
+  hoverTip(info, () => [
+    `gpt-5-nano: ${fmtUsd(nano.withCache)} with prompt caching`,
+    `${fmtCompact(nano.fresh)} input tokens × $${GPT5_NANO.input}/1M + ${fmtCompact(nano.cached)} ` +
+      `cached input tokens × $${GPT5_NANO.cached}/1M + ${fmtInt(nano.calls)} output tokens × ` +
+      `$${GPT5_NANO.output}/1M`,
+    `All prices are per token. Output is one token per model call (${fmtInt(nano.calls)} calls), ` +
+      "since each call answers with a single yes/no or score token.",
+    `${fmtUsd(nano.noCache)} with no cache hits: all ${fmtCompact(m.input_tokens)} requested ` +
+      `input tokens at $${GPT5_NANO.input}/1M`,
+    `This run cost ${fmtUsd(m.gpu_cost_usd)} on the H100. The estimate assumes OpenAI's prompt ` +
+      "cache hits the same prefixes Quail read from KV, and counts no reasoning tokens.",
+  ]);
+  return el("span", {}, text, " ", info);
+}
+
+// seconds the query has run on the GPU, frozen once it ends
+function liveSeconds(run) {
+  if (!run || run.executionStarted === undefined) return null;
+  const end = run.executionEnded === undefined ? performance.now() : run.executionEnded;
+  return (end - run.executionStarted) / 1000;
+}
+
+// the query time and cost cards advance with the timer, between renders
+function tickCards(run) {
+  const seconds = liveSeconds(run);
+  if (seconds === null || (run.metrics && run.metrics.wall_s !== undefined)) return;
+  const wall = document.querySelector('[data-live="wall"]');
+  const cost = document.querySelector('[data-live="cost"]');
+  if (!wall || !cost) { renderCards(run, run.metrics || null); return; }
+  wall.textContent = fmtSeconds(seconds);
+  cost.textContent = fmtUsd(seconds / 3600 * state.config.usd_per_hour);
 }
 
 function renderCards(run, metrics) {
@@ -614,8 +711,7 @@ function renderCards(run, metrics) {
   // while the page computes the numbers of a finished query, the cards say so
   const waiting = run && run.computing && (!metrics || metrics.complete === false)
     ? (run.status && DONE.has(run.status.state) ? "computing…" : "running…") : "—";
-  const liveWall = run && run.executionStarted !== undefined
-    ? (performance.now() - run.executionStarted) / 1000 : null;
+  const liveWall = liveSeconds(run);
   const wall = metrics && m.wall_s !== undefined ? m.wall_s : liveWall;
   const cost = metrics && m.gpu_cost_usd !== undefined
     ? m.gpu_cost_usd : (liveWall === null ? null : liveWall / 3600 * price);
@@ -623,18 +719,24 @@ function renderCards(run, metrics) {
   const outputLabel = state.viz ? state.viz.outputLabel : "output rows";
   const outputValue = run && run.status && run.status.result
     ? fmtInt(run.status.result.rows) : (live.output === undefined ? "—" : fmtInt(live.output));
+  // the same throughput line under the query time in every view
+  const throughput = m.tokens_per_second
+    ? `${fmtInt(m.tokens_per_second)} tokens/second` : "excluding model startup";
+  const kvSplit = m.kv_read_tokens !== undefined && m.kv_read_tokens !== null
+    && m.fresh_tokens !== undefined
+    ? `${fmtCompact(m.kv_read_tokens)} from KV + ${fmtCompact(m.fresh_tokens)} fresh` : "";
   if (demo.view === "compaction") {
     const v = (value) => (value === undefined || value === null || value === "—") ? waiting : value;
     const regret = metrics && m.regret_tokens === null && m.complete
       ? "not measured" : (metrics ? fmtCompact(m.regret_tokens) : null);
     cards.push(card(v(wall === null ? null : fmtSeconds(wall)), "query time on the GPU",
-      "excluding model startup", false));
-    cards.push(card(v(cost === null ? null : fmtUsd(cost)), "GPU cost", `one H100 at $${price}/h`, false));
+      throughput, false, "wall"));
+    cards.push(card(v(cost === null ? null : fmtUsd(cost)), "GPU cost", costSub(m, price), false, "cost"));
     cards.push(card(v(metrics ? fmtCompact(m.input_tokens) : null), "requested input tokens",
-      m.tokens_per_second ? `${fmtInt(m.tokens_per_second)} tokens/second` : "", !metrics));
+      kvSplit, !metrics));
     cards.push(card(v(metrics ? fmtCompact(m.fresh_tokens) : null), "fresh input tokens computed",
       "", !metrics));
-    cards.push(card(v(regret), "avoidable computation (KV regret)",
+    cards.push(card(v(regret), "avoidable recomputed tokens (KV regret)",
       "",
       !metrics || m.complete === false));
     cards.push(card(live.before !== undefined ? `${fmtCompact(live.before)} → ${fmtCompact(live.after)}` : "—",
@@ -645,11 +747,9 @@ function renderCards(run, metrics) {
     const regret = metrics && m.regret_tokens === null && m.complete
       ? "not measured" : (metrics ? fmtCompact(m.regret_tokens) : null);
     cards.push(card(v(wall === null ? null : fmtSeconds(wall)), "query time on the GPU",
-      m.tokens_per_second ? `${fmtInt(m.tokens_per_second)} requested tokens/second` : "excluding model startup",
-      false));
+      throughput, false, "wall"));
     cards.push(card(v(metrics ? fmtCompact(m.input_tokens) : null), "requested input tokens",
-      m.kv_read_tokens !== undefined && m.kv_read_tokens !== null && m.fresh_tokens !== undefined
-        ? `${fmtCompact(m.kv_read_tokens)} from KV + ${fmtCompact(m.fresh_tokens)} fresh` : "",
+      kvSplit,
       !metrics));
     cards.push(card(v(metrics ? fmtCompact(m.kv_read_tokens) : null), "tokens read from KV",
       m.kv_read_tokens && m.input_tokens ? `${pct(m.kv_read_tokens, m.input_tokens)} of the requested input` : "",
@@ -657,11 +757,11 @@ function renderCards(run, metrics) {
     cards.push(card(v(metrics ? fmtCompact(m.fresh_tokens) : null), "fresh input tokens computed",
       "",
       !metrics));
-    cards.push(card(v(regret), "avoidable computation (KV regret)",
+    cards.push(card(v(regret), "avoidable recomputed tokens (KV regret)",
       "",
       !metrics || m.complete === false));
     cards.push(card(v(cost === null ? null : fmtUsd(cost)), "GPU cost",
-      `one H100 at $${price}/h`, false));
+      costSub(m, price), false, "cost"));
     cards.push(card(outputValue, outputLabel, "", false));
   }
   $("cards").replaceChildren(...cards);
@@ -740,23 +840,107 @@ class QueryResults {
   }
 }
 
-function formatCell(value) {
-  if (value === null || value === undefined) return "NULL";
-  if (typeof value === "object") return JSON.stringify(value);
-  return String(value);
+// An edited query: the demo's visual, fed by the answer stream, above
+// the rows the query returned.
+class CustomQuery {
+  constructor(main) {
+    this.main = main;
+    this.main.custom = true;
+    if (this.main.stages) this.main.stages = ["question 1", "question 2"];
+    this.results = new QueryResults();
+    this.outputLabel = this.results.outputLabel;
+  }
+
+  reset() {
+    this.main.reset();
+    this.results.reset();
+  }
+
+  init(container) {
+    const mainNode = el("div", {});
+    const resultsNode = el("div", { class: "custom-results" });
+    container.replaceChildren(mainNode, resultsNode);
+    this.main.init(mainNode);
+    this.results.init(resultsNode);
+  }
+
+  onPlan(plan) {
+    if (this.main.onPlan) this.main.onPlan(plan);
+  }
+
+  onProgress(progress) {
+    this.main.onProgress(progress);
+  }
+
+  onAnswers(entries) {
+    this.main.onAnswers(entries);
+  }
+
+  async onFinished(run, extra) {
+    try {
+      await this.main.onFinished(run, extra);
+    } catch (error) {
+      logEvent(run, `the visual could not finish: ${error.message}`);
+    }
+    await this.results.onFinished(run);
+  }
+
+  counts() {
+    return this.results.counts();
+  }
 }
 
-// One cell per review: 5,000 labeled negative, then 5,000 positive.
+function formatCell(value) {
+  if (value === null || value === undefined) return "NULL";
+  const text = typeof value === "object" ? JSON.stringify(value) : String(value);
+  // the download has the full values
+  return text.length > 300 ? `${text.slice(0, 299)}…` : text;
+}
+
+// One square per review, in table order.
 class ReviewGrid {
   constructor(demo, data) {
     this.demo = demo;
     this.reviews = data.reviews;
-    this.cols = 200;
+    this.cols = 100;
     this.rows = Math.ceil(this.reviews.length / this.cols);
     this.score = demo.view === "score";
     this.stages = (demo.hints && demo.hints.stages) || ["question 1", "question 2"];
-    this.outputLabel = this.score ? "positive reviews" : "passed both";
+    this.outputLabel = this.score ? "reviews that passed" : "passed both";
+    this.comparison = ">=";
+    this.cut = 0.1;
     this.reset();
+  }
+
+  passes(score) {
+    const cut = this.cut;
+    switch (this.comparison) {
+      case ">": return score > cut;
+      case "<": return score < cut;
+      case "<=": return score <= cut;
+      default: return score >= cut;
+    }
+  }
+
+  cutText() {
+    return ` 1 (passes at score ${this.comparison} ${this.cut})`;
+  }
+
+  // the score filter's comparison and threshold come from the query's plan
+  onPlan(plan) {
+    const graph = plan && plan.envelope && plan.envelope.graph;
+    const node = graph && graph.nodes.find((item) => item.type === "quail.score_filter");
+    if (!node) return;
+    this.comparison = node.attributes.comparison;
+    this.cut = node.attributes.threshold;
+    this.passed = 0;
+    this.stream = [];
+    this.scores.forEach((score, row) => {
+      if (score >= 0 && this.passes(score)) { this.passed += 1; this.stream.push(row); }
+    });
+    if (this.cutNode) this.cutNode.textContent = this.cutText();
+    if (this.list) this.renderList();
+    if (this.countsNode) this.renderCounts();
   }
 
   reset() {
@@ -771,26 +955,63 @@ class ReviewGrid {
     if (this.countsNode) this.renderCounts();
   }
 
+  static PITCH = 6;      // a 5 pixel square and a 1 pixel gap
+
+  cellAt(x, y) {
+    const { PITCH } = ReviewGrid;
+    const col = Math.floor(x / PITCH), row = Math.floor(y / PITCH);
+    const index = row * this.cols + col;
+    if (col < 0 || col >= this.cols || row < 0 || index >= this.reviews.length) return null;
+    return index;
+  }
+
+  describeCell(index) {
+    const review = this.reviews[index];
+    let status;
+    if (this.score) {
+      const score = this.scores[index];
+      status = score < 0 ? "not scored yet"
+        : `score ${score.toFixed(3)}, ${this.passes(score) ? "passes" : "fails"} ${this.comparison} ${this.cut}`;
+    } else {
+      status = ["waiting", `failed "${this.stages[0]}"`,
+        `passed "${this.stages[0]}", failed "${this.stages[1]}"`, "passed both"][this.cells[index]];
+    }
+    return [review.id, status, review.head];
+  }
+
   init(container) {
-    this.canvas = el("canvas", { class: "cells", width: this.cols, height: this.rows });
+    const { PITCH } = ReviewGrid;
+    const width = this.cols * PITCH - 1;
+    const height = this.rows * PITCH - 1;
+    this.canvas = el("canvas", { class: "cells review-cells", width, height,
+      style: `aspect-ratio: ${width} / ${height}` });
+    hoverTip(this.canvas, (x, y) => {
+      const index = this.cellAt(x, y);
+      return index === null ? null : this.describeCell(index);
+    });
+    const caption = [el("b", {}, "Each square is one review (one document)."),
+      ` There are ${fmtInt(this.reviews.length)} squares, one per row of the reviews ` +
+      "table, and each is colored by the query's answer for that review. " +
+      "Hover over a square to read the review."];
     this.list = el("div", { class: "stream" });
     this.countsNode = el("span", { class: "counts" });
+    this.listTitle = el("p", { class: "stream-title" });
+    this.cutNode = el("span", {}, this.cutText());
     const legend = this.score
       ? [el("span", {}, el("span", { class: "swatch", style: "background:#ececec" }), "waiting"),
-         el("span", {}, "score 0 ", el("span", { class: "ramp" }), " 1 (0.5 is the cut)")]
+         el("span", {}, "score 0 ", el("span", { class: "ramp" }), this.cutNode)]
       : [el("span", {}, el("span", { class: "swatch", style: "background:#ececec" }), "waiting"),
          el("span", {}, el("span", { class: "swatch", style: "background:#d2d2d2" }), `failed "${this.stages[0]}"`),
          el("span", {}, el("span", { class: "swatch", style: "background:#8c8c8c" }), `passed "${this.stages[0]}", failed "${this.stages[1]}"`),
          el("span", {}, el("span", { class: "swatch", style: "background:#c31331" }), "passed both")];
     container.replaceChildren(
-      el("div", { class: "legend" }, ...legend, this.countsNode),
+      el("p", { class: "viz-caption" }, ...caption),
+      el("div", { class: "legend" },
+        el("span", {}, el("span", { class: "swatch outline" }), "1 square = 1 review"),
+        ...legend, this.countsNode),
       el("div", { class: "grid-layout" },
-        el("div", { class: "grid-rows" },
-          this.canvas),
-        el("div", {},
-          el("p", { class: "stream-title" },
-            this.score ? "positive reviews as they are scored" : "reviews that passed both questions"),
-          this.list)));
+        el("div", { class: "grid-rows" }, this.canvas),
+        el("div", { class: "grid-stream" }, this.listTitle, this.list)));
     this.draw();
     this.renderList();
     this.renderCounts();
@@ -821,7 +1042,7 @@ class ReviewGrid {
           const score = entry.scores[index];
           if (this.scores[r] < 0) this.finished += 1;
           this.scores[r] = score;
-          if (score >= 0.5) { this.passed += 1; this.stream.push(r); }
+          if (this.passes(score)) { this.passed += 1; this.stream.push(r); }
         });
       }
     }
@@ -838,8 +1059,8 @@ class ReviewGrid {
 
   draw() {
     const context = this.canvas.getContext("2d");
-    const image = context.createImageData(this.cols, this.rows);
-    const pixels = image.data;
+    const { PITCH } = ReviewGrid;
+    context.clearRect(0, 0, this.canvas.width, this.canvas.height);
     const palette = [[236, 236, 236], [210, 210, 210], [140, 140, 140], [195, 19, 49]];
     for (let i = 0; i < this.reviews.length; i++) {
       let color;
@@ -854,25 +1075,30 @@ class ReviewGrid {
       } else {
         color = palette[this.cells[i]];
       }
-      const offset = i * 4;
-      pixels[offset] = color[0]; pixels[offset + 1] = color[1];
-      pixels[offset + 2] = color[2]; pixels[offset + 3] = 255;
+      context.fillStyle = `rgb(${color[0]},${color[1]},${color[2]})`;
+      const row = Math.floor(i / this.cols);
+      context.fillRect((i % this.cols) * PITCH, row * PITCH, PITCH - 1, PITCH - 1);
     }
-    context.putImageData(image, 0, 0);
   }
 
   renderList() {
-    const latest = this.stream.slice(-30).reverse();
+    const shown = 30;
+    const total = this.stream.length;
+    const noun = this.custom || this.score ? "reviews that passed"
+      : "reviews that passed both questions";
+    this.listTitle.textContent = total > shown
+      ? `the ${shown} most recent of ${fmtInt(total)} ${noun}`
+      : total ? `all ${fmtInt(total)} ${noun}` : noun;
+    const latest = this.stream.slice(-shown).reverse();
     if (!latest.length) {
       this.list.replaceChildren(el("p", { class: "empty" }, "nothing has passed yet"));
       return;
     }
     this.list.replaceChildren(...latest.map((row) => {
       const review = this.reviews[row];
-      const label = review.label ? "labeled positive" : "labeled negative";
       const extra = this.score ? `, score ${this.scores[row].toFixed(2)}` : "";
-      return el("div", { class: "doc" + (review.label ? "" : " neg") },
-        el("div", { class: "doc-head" }, `${review.id}, ${label}${extra}`),
+      return el("div", { class: "doc" },
+        el("div", { class: "doc-head" }, `${review.id}${extra}`),
         el("div", { class: "doc-text" }, review.head));
     }));
   }
@@ -880,14 +1106,14 @@ class ReviewGrid {
   renderCounts() {
     const total = this.reviews.length;
     this.countsNode.textContent = this.score
-      ? `${fmtCompact(this.passed)} positive, ${fmtCompact(this.finished - this.passed)} negative, ` +
+      ? `${fmtCompact(this.passed)} passed, ${fmtCompact(this.finished - this.passed)} failed, ` +
         `${fmtCompact(this.finished)} / ${fmtCompact(total)} scored`
       : `${fmtCompact(this.passed)} passed both, ${fmtCompact(this.passedFirst)} passed "${this.stages[0]}", ` +
         `${fmtCompact(this.finished)} / ${fmtCompact(total)} finished`;
   }
 }
 
-// BIO-4: reports are rows, terms are columns. The filters color the row
+// BIO: reports are rows, terms are columns. The filters color the row
 // and column headers; each join match is one cell. The left strip shows
 // which report prefixes are in KV, evicted, or computed again.
 class ReportMatrix {
@@ -925,6 +1151,7 @@ class ReportMatrix {
     const R = this.reports.length, T = this.terms.length, G = ReportMatrix.GUTTER;
     this.canvas = el("canvas", { class: "cells", width: T + G, height: R + G,
       style: `aspect-ratio: ${T + G} / ${R + G}` });
+    hoverTip(this.canvas, (x, y) => this.describeCell(Math.floor(x), Math.floor(y)));
     this.stageNodes = {};
     const stage = (key, label) => {
       const value = el("b", {}, "—");
@@ -934,6 +1161,12 @@ class ReportMatrix {
     this.results = el("div", {});
     this.resultsTitle = el("div", { class: "results-title" });
     container.replaceChildren(
+      el("p", { class: "viz-caption" },
+        el("b", {}, "Each row is one report and each column is one reaction term."),
+        ` There are ${fmtInt(R)} rows and ${fmtInt(T)} columns, so each cell is one ` +
+        "report × term pair the join can ask about. The strips on the left " +
+        "show each report's filter answer and KV state; the strip on top shows each " +
+        "term's filter answers. Hover to see the report and term."),
       el("div", { class: "stages" },
         stage("reports", `${this.filterLabels.r || "serious"} reports`),
         stage("neuro", `${this.filterLabels.n || "neurological"} terms`),
@@ -1034,6 +1267,37 @@ class ReportMatrix {
     } catch (error) {
       logEvent(run, `join tables unavailable: ${error.message}`);
     }
+  }
+
+  describeCell(x, y) {
+    const R = this.reports.length, T = this.terms.length, G = ReportMatrix.GUTTER;
+    const serious = this.filterLabels.r || "serious";
+    const reportLine = (r) => {
+      const s = this.rowState[r];
+      return s === 2 ? `passed "${serious}"` : s === 1 ? `failed "${serious}"` : "not filtered yet";
+    };
+    const termLine = (t) => {
+      const bits = this.colState[t];
+      if (!(bits & 4)) return "not filtered yet";
+      const passed = [bits & 1 ? this.joinLabels.n : null, bits & 2 ? this.joinLabels.c : null]
+        .filter(Boolean);
+      return passed.length ? `passed the ${passed.join(" and ")} filter` : "failed both term filters";
+    };
+    if (y >= G && y < G + R && x < G) {
+      const r = y - G, report = this.reports[r];
+      const kv = ["never loaded", "prefix in KV", "prefix evicted", "prefix computed again"][this.kv[r]];
+      return [`report ${report.id}`, x < 5 ? reportLine(r) : kv, report.head];
+    }
+    if (x >= G && x < G + T && y < G) {
+      const t = x - G;
+      return [`term ${this.terms[t].id}: ${this.terms[t].term}`, termLine(t)];
+    }
+    if (x < G || y < G || x >= G + T || y >= G + R) return null;
+    const r = y - G, t = x - G, bits = this.cells[r * T + t];
+    const match = bits === 3 ? `${this.joinLabels.n} and ${this.joinLabels.c} match`
+      : bits === 1 ? `${this.joinLabels.n} match` : bits === 2 ? `${this.joinLabels.c} match`
+        : "no match recorded";
+    return [`report ${this.reports[r].id} × term "${this.terms[t].term}"`, match, reportLine(r)];
   }
 
   counts() {
@@ -1166,12 +1430,21 @@ class Trajectories {
       return { bar, boxes, after };
     });
     container.replaceChildren(
+      el("p", { class: "viz-caption" },
+        el("b", {}, "Each row is one agent trace and each box is one tool call in it."),
+        ` There are ${fmtInt(this.conversations.length)} traces with ` +
+        `${fmtInt(this.conversations.reduce((n, c) => n + c.calls.length, 0))} tool calls. ` +
+        "For every call, the model answers two questions: keep the full output (keep), " +
+        "keep only that the call happened (truncate its output), or neither (drop). " +
+        "The last 3 calls of each trace (its last 6 messages) are always kept and " +
+        "aren't asked. A box is as wide as the call's output tokens. Hover over a box " +
+        "to see the call."),
       el("div", { class: "legend" },
         el("span", {}, el("span", { class: "swatch outline" }), "waiting"),
         el("span", {}, el("span", { class: "swatch", style: "background:#c31331" }), "keep"),
         el("span", {}, el("span", { class: "swatch", style: "background:#f6d3da" }), "truncate to 300 chars"),
         el("span", {}, el("span", { class: "swatch", style: "background:#ececec" }), "drop"),
-        el("span", {}, el("span", { class: "swatch", style: "background:#2a2828" }), "pinned: first message and last 6 calls"),
+        el("span", {}, el("span", { class: "swatch", style: "background:#2a2828" }), "pinned: the last 3 calls"),
         el("span", {}, "box width = tool output tokens"),
         el("span", {}, "gray line = length before"),
         this.countsNode),

@@ -66,10 +66,17 @@ def test_filter_pieces_and_minimum_for_a_two_stage_filter(tiny_tables):
     assert summary["gpu_cost_usd"] == pytest.approx(2.0 / 3600 * 3.6)
     assert summary["regret_tokens"] == 7 and summary["cached_tokens"] == 3
     assert summary["kv_read_tokens"] == expected_requested - report["fresh_tokens"]
+    # before the minimum is counted, a 0 cached counter is not a KV count
+    partial = regret.metrics({"wall_s": 2.0, "fresh_tokens": 100, "cached_tokens": 0},
+                             {}, gpus=1, usd_per_hour=3.6)
+    assert partial["input_tokens"] is None and partial["kv_read_tokens"] is None
+    partial = regret.metrics({"wall_s": 2.0, "fresh_tokens": 100, "cached_tokens": 30},
+                             {}, gpus=1, usd_per_hour=3.6)
+    assert partial["input_tokens"] == 130 and partial["kv_read_tokens"] == 30
 
 
 def test_join_pieces_count_partners_once_per_anchor(tiny_tables):
-    item, description = describe("bio-4", tiny_tables, {0: "r", 1: "r"})
+    item, description = describe("bio", tiny_tables, {0: "r", 1: "r"})
     assert [join.id for join in description.info.joins] == ["join:0", "join:1"]
     assert description.info.joins[0].relations == ("r", "n")
     pieces = description.pieces

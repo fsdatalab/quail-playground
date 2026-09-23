@@ -88,7 +88,7 @@ def test_page_config_and_data(data_dir, monkeypatch):
                                      "qwen3-reranker-0.6b-bf16": None,
                                      "diffusion-gemma-26b-a4b-fp8": None}
         assert [item["key"] for item in config["demos"]] == [
-            "imdb-sentiment", "imdb-ending", "bio-4", "compaction"]
+            "compaction", "imdb-sentiment", "imdb-ending", "bio"]
         assert config["groups"]["imdb"]["tables"]["reviews"]["id_col"] == "review_id"
         assert config["usd_per_hour"] == 3.0
         assert client.get("/data/imdb").json() == {"reviews": [{"id": "review-0"}]}
@@ -202,6 +202,7 @@ def test_metrics_use_the_saved_answer_tables(data_dir, monkeypatch, tiny_tables)
         assert result["tokens_per_second"] == result["input_tokens"] / 4.0
         assert result["gpu_cost_usd"] == pytest.approx(4.0 / 3600 * 3.0)
         assert result["output_rows"] == 2 and result["cached_tokens"] == 20
+        assert result["model_calls"] == 5
         assert described == [custom_sql]
         # computed once; a second read is the remembered result
         fake._files = {}
@@ -215,6 +216,27 @@ def test_metrics_use_the_saved_answer_tables(data_dir, monkeypatch, tiny_tables)
         response = client.get(f"/metrics/{QWEN3_4B}/q2?demo={item.key}")
         assert response.status_code == 202
         assert response.json() == {"status": "computing", "metrics": None}
+
+
+def test_prewarm_tokenizes_every_prepared_demo(data_dir, tiny_tables, capsys):
+    tokenized = []
+
+    def tokenizer(model):
+        def encode(texts):
+            tokenized.append((model, len(texts)))
+            return batch_tok(texts)
+        return encode
+
+    metrics = web.Metrics(web.WebSettings(
+        static_dir=WEB_DIR, data_dir=data_dir, tokenizer_factory=tokenizer))
+    metrics.prewarm_all()
+    reviews = tiny_tables["imdb"]["reviews"].num_rows
+    assert tokenized == [("qwen3-reranker-0.6b-bf16", reviews), (QWEN3_4B, reviews)]
+    assert set(metrics._document_tokens) == {
+        ("qwen3-reranker-0.6b-bf16", "imdb"), (QWEN3_4B, "imdb")}
+    printed = capsys.readouterr().out
+    assert "prewarm bio: LookupError" in printed
+    assert "prewarm compaction: LookupError" in printed
 
 
 def test_result_preview_returns_json_rows(data_dir, monkeypatch):
