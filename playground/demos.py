@@ -65,16 +65,16 @@ OPENHANDS_SOURCE = {
 }
 
 IMDB_SENTIMENT_SQL = """\
-SELECT r.review_id
+SELECT r.review_id, r.review
 FROM reviews AS r
 WHERE AI.SCORE(
     PROMPT('Did the reviewer enjoy the movie? Would they recommend it?\\n\\n{0}',
            r.review)
-) >= 0.5
+) >= 0.2
 """
 
 IMDB_ENDING_SQL = """\
-SELECT r.review_id
+SELECT r.review_id, r.review
 FROM reviews AS r
 WHERE AI.IF(
     PROMPT('Does this review discuss the ending of the movie?\\n\\n{0}',
@@ -192,7 +192,7 @@ DEMOS = (
         tables=(REVIEWS,),
         view="score",
         note=("The query scores whether each reviewer enjoyed the movie and "
-              "would recommend it. A score of 0.5 or higher counts as "
+              "would recommend it. A score of 0.2 or higher counts as "
               "positive."),
         hints={"source": IMDB_SOURCE},
     ),
