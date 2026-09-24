@@ -41,15 +41,17 @@ The first deploy downloads and prepares the demo data. It can take several
 minutes. When the deploy finishes, Modal prints the playground page URL. Open
 that URL in your browser.
 
-Warm the three model servers before a demo:
+Warm one container per model before a demo:
 
 ```bash
 uv run modal run playground/modal_app.py::warm 2>&1 | tee warm.log
 ```
 
-The command finds the deployed model servers through Modal and starts them at
-the same time. A model server scales down after 15 minutes without a request,
-so run the command again before a scheduled demo.
+The command starts slot zero for each model. The other three slots start
+only when queries are assigned to them. Every slot keeps its inputs and
+query database on the `quail-results` volume, so a later start restores its
+data. A container scales down after 15 minutes without a request, so run
+the command again before a scheduled demo.
 
 ## Demo queries
 
@@ -63,8 +65,11 @@ so run the command again before a scheduled demo.
 ## How it runs
 
 - The playground page runs in a CPU container on Modal.
-- Each model has its own Quail Server running on one H100.
-- The page sends the selected SQL query to the matching server.
+- Each model has four Quail Server slots, each with a separate H100 container
+  limit of one. At most four containers can run for one model.
+- The page assigns each new query to a slot and sends its later status,
+  results, and metrics requests to that same slot. Each slot stores its own
+  query state and results.
 - Quail streams status updates and answer batches back to the page while the
   query runs.
 - The page prepares its token cache while the query runs, then uses the final

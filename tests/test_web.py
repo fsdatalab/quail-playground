@@ -113,6 +113,58 @@ def test_proxy_adds_the_token_and_keeps_quail_headers(data_dir, monkeypatch):
     assert seen[2][1] == "/v1/queries/q1?after=3&wait=5"
 
 
+def test_four_server_slots_keep_query_requests_together(data_dir, monkeypatch):
+    seen = []
+
+    def upstream(request):
+        host = request.url.host
+        if request.method == "POST":
+            query_id = json.loads(request.content)["query_id"]
+            seen.append((host, query_id))
+            return httpx.Response(201, json={"id": query_id})
+        query_id = request.url.path.split("/")[3]
+        seen.append((host, query_id))
+        return httpx.Response(200, json={"id": query_id})
+
+    original = httpx.AsyncClient
+
+    def client(*args, **kwargs):
+        kwargs["transport"] = httpx.MockTransport(upstream)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(web.httpx, "AsyncClient", client)
+    urls = tuple(f"http://slot-{slot}" for slot in range(4))
+    settings = web.WebSettings(
+        static_dir=WEB_DIR, data_dir=data_dir, servers={QWEN3_4B: urls},
+        token="secret", client_factory=lambda endpoint, token: endpoint)
+    with TestClient(web.create_web_app(settings)) as page:
+        ids = [f"q4_{i}" for i in range(100)]
+        selected = []
+        for url in urls:
+            selected.append(next(query_id for query_id in ids
+                                 if web.server_endpoint(
+                                     settings, QWEN3_4B, query_id) == url))
+        for query_id in selected:
+            submitted = page.post(f"/s/{QWEN3_4B}/v1/queries",
+                                  json={"sql": "SELECT 1", "query_id": query_id})
+            assert submitted.json()["id"] == query_id
+            status = page.get(f"/s/{QWEN3_4B}/v1/queries/{query_id}")
+            assert status.json()["id"] == query_id
+            assert seen[-2][0] == seen[-1][0]
+            assert web.server_client(settings, QWEN3_4B, query_id) == (
+                f"http://{seen[-1][0]}")
+        assert {host for host, _ in seen} == {url[7:] for url in urls}
+        generated = page.post(f"/s/{QWEN3_4B}/v1/queries",
+                              json={"sql": "SELECT 1"}).json()["id"]
+        assert generated.startswith("q4_")
+        assert web.server_endpoint(settings, QWEN3_4B, "q1") == urls[0]
+        missing = list(urls)
+        missing[1] = None
+        settings.servers[QWEN3_4B] = tuple(missing)
+        assert page.get(
+            f"/s/{QWEN3_4B}/v1/queries/{selected[1]}").status_code == 404
+
+
 class FakeServerClient:
     """What Metrics reads off a server: the status, files, and answers."""
 
@@ -186,7 +238,7 @@ def test_metrics_use_the_saved_answer_tables(data_dir, monkeypatch, tiny_tables)
         {"alias": "r", "position": 1, "file": "answers/filters/r--1.arrow"}],
         "joins": []})
     fake = FakeServerClient(status, files)
-    monkeypatch.setattr(app.state.metrics, "_client", lambda model: fake)
+    monkeypatch.setattr(app.state.metrics, "_client", lambda model, query_id: fake)
     with TestClient(app) as client:
         # computed on a thread: 202 until the numbers are there
         for _ in range(200):
@@ -210,7 +262,8 @@ def test_metrics_use_the_saved_answer_tables(data_dir, monkeypatch, tiny_tables)
         assert client.get(f"/metrics/{QWEN3_4B}/q1?demo=nope").status_code == 409
 
     unfinished = FakeServerClient(_status(state="running"), {})
-    monkeypatch.setattr(app.state.metrics, "_client", lambda model: unfinished)
+    monkeypatch.setattr(app.state.metrics, "_client",
+                        lambda model, query_id: unfinished)
     app.state.metrics._results.clear()
     with TestClient(app) as client:
         response = client.get(f"/metrics/{QWEN3_4B}/q2?demo={item.key}")
@@ -245,7 +298,7 @@ def test_result_preview_returns_json_rows(data_dir, monkeypatch):
     result = pa.table({"review_id": ["r1", "r2", "r3"],
                        "score": [0.2, 0.7, 0.9]})
     fake = FakeServerClient(_status(rows=3), result=result)
-    monkeypatch.setattr(app.state.metrics, "_client", lambda model: fake)
+    monkeypatch.setattr(app.state.metrics, "_client", lambda model, query_id: fake)
 
     with TestClient(app) as client:
         response = client.get(f"/results/{QWEN3_4B}/q1")
@@ -268,7 +321,7 @@ def test_result_download_returns_complete_csv(data_dir, monkeypatch):
     result = pa.table({"review_id": ["r1", "r2", "r3"],
                        "score": [0.2, 0.7, 0.9]})
     fake = FakeServerClient(_status(rows=3), result=result)
-    monkeypatch.setattr(app.state.metrics, "_client", lambda model: fake)
+    monkeypatch.setattr(app.state.metrics, "_client", lambda model, query_id: fake)
 
     with TestClient(app) as client:
         response = client.get(f"/downloads/{QWEN3_4B}/q1")
@@ -290,7 +343,7 @@ def test_join_pairs_are_read_from_the_saved_tables(data_dir, monkeypatch):
     status = _status(files={"filters": [], "joins": [
         {"position": 0, "file": "answers/joins/0.arrow"}]})
     fake = FakeServerClient(status, {"answers/joins/0.arrow": _ipc_bytes(table)})
-    monkeypatch.setattr(app.state.metrics, "_client", lambda model: fake)
+    monkeypatch.setattr(app.state.metrics, "_client", lambda model, query_id: fake)
     with TestClient(app) as client:
         assert client.get(f"/joins/{QWEN3_4B}/q1").json() == {"joins": [
             {"position": 0, "anchor": "r", "partners": ["n"], "asked": 3,

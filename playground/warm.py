@@ -29,7 +29,7 @@ def ping(endpoint: str, timeout_s: float = WARM_TIMEOUT_S) -> int:
 
 
 def warm_servers(servers: Mapping[str, str | None]) -> list[str]:
-    """Start every server at once and return one status line per model."""
+    """Start one server per model and return one status line per model."""
     started = time.time()
     lines = []
     with concurrent.futures.ThreadPoolExecutor(len(servers) or 1) as pool:

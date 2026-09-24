@@ -1,4 +1,4 @@
-"""Deploy the playground on Modal: three Quail Servers and the page.
+"""Deploy the playground on Modal: four server slots per model and the page.
 
     modal deploy playground/modal_app.py 2>&1 | tee deploy.log
 
@@ -6,7 +6,8 @@ Run it from the repository root: the images copy ``pyproject.toml`` and
 ``uv.lock`` from the working directory, and ``uv sync`` inside the
 image installs ``quail-engine`` from the GitHub commit the lock pins.
 
-One class per model, each on one H100, at most one container each.
+Each model has four server classes, each on one H100 with one container.
+The page routes a query and all later requests for it to the same class.
 ``@modal.enter`` boots the model with a tiny query, so the first real
 query on a container does not pay the boot, then restores the server's
 database from the Volume and starts quail-server. There is no memory
@@ -20,8 +21,8 @@ each server registers the tables its demos read when it starts, the
 same way an upload lands. Pressing Run on the page submits the query.
 
 Data on the ``quail-results`` Volume:
-``/results/quail-playground/servers/<model>`` holds that server's
-inputs, results, and database checkpoint.
+``/results/quail-playground/servers/<model>`` holds slot zero's inputs,
+results, and database checkpoint. The other slots use separate paths.
 
 The bearer token comes from the ``quail-service-token`` secret of the
 workspace, as ``QUAIL_SERVER_TOKEN`` or ``QUAIL_SERVICE_TOKEN``. Add
@@ -50,8 +51,12 @@ KERNEL_CACHE_DIR = "/root/.cache/kernels"
 # an idle server stays up this long after its last request; a later
 # request pays the model boot again
 SCALEDOWN_S = 15 * 60
-SERVER_CLASSES = {QWEN3_4B: "Qwen3Server", RERANKER: "RerankerServer",
-                  GEMMA: "GemmaServer"}
+SERVER_SLOTS = 4
+SERVER_CLASSES = {
+    QWEN3_4B: tuple(f"Qwen3Server{slot}" for slot in range(SERVER_SLOTS)),
+    RERANKER: tuple(f"RerankerServer{slot}" for slot in range(SERVER_SLOTS)),
+    GEMMA: tuple(f"GemmaServer{slot}" for slot in range(SERVER_SLOTS)),
+}
 
 app = modal.App(APP_NAME)
 results_volume = modal.Volume.from_name("quail-results", create_if_missing=True)
@@ -101,13 +106,17 @@ image = (
 
 
 class ServerContainer:
-    """The lifecycle of one server container, shared by the three classes."""
+    """The lifecycle of one model server slot."""
 
-    def __init__(self, model: str):
+    def __init__(self, model: str, slot: int):
         self.model = model
-        self.data_dir = SERVERS_DIR / model
+        self.slot = slot
+        self.data_dir = (SERVERS_DIR / model if slot == 0 else
+                         SERVERS_DIR / f"{model}-replica-{slot}")
         self.db_copy = self.data_dir / "quail.sqlite3"
-        self.local_db = LOCAL_DIR / model / "quail.sqlite3"
+        self.local_dir = (LOCAL_DIR / model if slot == 0 else
+                          LOCAL_DIR / f"{model}-replica-{slot}")
+        self.local_db = self.local_dir / "quail.sqlite3"
         self.executor = None
         self.server = None
         self.checkpoint = None
@@ -118,7 +127,7 @@ class ServerContainer:
         from quail.server.executor import ChildProcessExecutor
 
         executor = ChildProcessExecutor()
-        manifest = warm_up(executor, self.model, LOCAL_DIR / self.model / "warmup")
+        manifest = warm_up(executor, self.model, self.local_dir / "warmup")
         print(f"warmed {self.model}: {manifest['rows']} rows", flush=True)
         self.executor = executor
 
@@ -184,89 +193,57 @@ def server_class(cls):
     )(modal.concurrent(max_inputs=64)(cls))
 
 
-@server_class
-class Qwen3Server:
-    """Quail Server for qwen3-4b-fp8: the IMDB ending query and BIO."""
+def register_server(model: str, slot: int) -> None:
+    """Register one independently routed server slot."""
+    class_name = SERVER_CLASSES[model][slot]
 
-    @modal.enter()
-    def start(self):
-        self.container = ServerContainer(QWEN3_4B)
-        self.container.warm()
-        self.container.start()
+    class ModelServer:
+        @modal.enter()
+        def start(self):
+            self.container = ServerContainer(model, slot)
+            self.container.warm()
+            self.container.start()
 
-    @modal.asgi_app()
-    def web(self):
-        return self.container.server.asgi
+        @modal.asgi_app()
+        def web(self):
+            return self.container.server.asgi
 
-    @modal.method()
-    def ping(self) -> str:
-        return QWEN3_4B
+        @modal.method()
+        def ping(self) -> str:
+            return model
 
-    @modal.exit()
-    def stop(self):
-        self.container.stop()
+        @modal.exit()
+        def stop(self):
+            self.container.stop()
 
-
-@server_class
-class RerankerServer:
-    """Quail Server for qwen3-reranker-0.6b-bf16: the IMDB sentiment query."""
-
-    @modal.enter()
-    def start(self):
-        self.container = ServerContainer(RERANKER)
-        self.container.warm()
-        self.container.start()
-
-    @modal.asgi_app()
-    def web(self):
-        return self.container.server.asgi
-
-    @modal.method()
-    def ping(self) -> str:
-        return RERANKER
-
-    @modal.exit()
-    def stop(self):
-        self.container.stop()
+    ModelServer.__name__ = class_name
+    ModelServer.__qualname__ = class_name
+    globals()[class_name] = server_class(ModelServer)
 
 
-@server_class
-class GemmaServer:
-    """Quail Server for diffusion-gemma-26b-a4b-fp8: agent trace compaction."""
-
-    @modal.enter()
-    def start(self):
-        self.container = ServerContainer(GEMMA)
-        self.container.warm()
-        self.container.start()
-
-    @modal.asgi_app()
-    def web(self):
-        return self.container.server.asgi
-
-    @modal.method()
-    def ping(self) -> str:
-        return GEMMA
-
-    @modal.exit()
-    def stop(self):
-        self.container.stop()
+for _model in MODELS:
+    for _slot in range(SERVER_SLOTS):
+        register_server(_model, _slot)
 
 
-def deployed_server(model: str):
-    """The deployed class of a model's server, looked up by name."""
-    return modal.Cls.from_name(APP_NAME, SERVER_CLASSES[model])()
+def deployed_server(model: str, slot: int = 0):
+    """The deployed class of a model's server slot, looked up by name."""
+    return modal.Cls.from_name(APP_NAME, SERVER_CLASSES[model][slot])()
 
 
 def deployed_server_urls() -> dict:
-    """Model name -> the web URL of its deployed server, or None."""
+    """Model name -> the four server URLs, with None for missing slots."""
     urls = {}
     for model in MODELS:
-        try:
-            urls[model] = deployed_server(model).web.get_web_url()
-        except Exception as error:  # noqa: BLE001 - not deployed yet
-            print(f"{model}: no deployed server ({error})", flush=True)
-            urls[model] = None
+        slots = []
+        for slot in range(SERVER_SLOTS):
+            try:
+                slots.append(deployed_server(model, slot).web.get_web_url())
+            except Exception as error:  # noqa: BLE001 - not deployed yet
+                print(f"{model} slot {slot}: no deployed server ({error})",
+                      flush=True)
+                slots.append(None)
+        urls[model] = tuple(slots)
     return urls
 
 
@@ -299,11 +276,13 @@ def page():
 
 @app.local_entrypoint()
 def warm():
-    """Start every server once, so each boots its model before a demo.
+    """Start slot zero for each model before a demo.
 
     Run with ``modal run playground/modal_app.py::warm``.
     """
     from playground.warm import warm_servers
 
-    for line in warm_servers(deployed_server_urls()):
+    first_slots = {model: urls[0] for model, urls in
+                   deployed_server_urls().items()}
+    for line in warm_servers(first_slots):
         print(line, flush=True)

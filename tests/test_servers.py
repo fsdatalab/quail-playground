@@ -117,3 +117,4 @@ def test_warm_servers_reports_each_model(monkeypatch):
     assert lines[0].startswith("qwen3-4b-fp8: HTTP 401 after")
     assert lines[1] == "qwen3-reranker-0.6b-bf16: no server deployed"
     assert lines[2] == "diffusion-gemma-26b-a4b-fp8: no server deployed"
+
