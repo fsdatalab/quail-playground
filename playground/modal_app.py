@@ -282,7 +282,5 @@ def warm():
     """
     from playground.warm import warm_servers
 
-    first_slots = {model: urls[0] for model, urls in
-                   deployed_server_urls().items()}
-    for line in warm_servers(first_slots):
+    for line in warm_servers(deployed_server_urls()):
         print(line, flush=True)

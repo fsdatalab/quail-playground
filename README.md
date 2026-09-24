@@ -41,15 +41,16 @@ The first deploy downloads and prepares the demo data. It can take several
 minutes. When the deploy finishes, Modal prints the playground page URL. Open
 that URL in your browser.
 
-Warm the three model servers before a demo:
+Warm all four slots for each of the three models before a demo:
 
 ```bash
 uv run modal run playground/modal_app.py::warm 2>&1 | tee warm.log
 ```
 
-The command finds the deployed model servers through Modal and starts them at
-the same time. A model server scales down after 15 minutes without a request,
-so run the command again before a scheduled demo.
+The command finds all twelve deployed server slots and starts them at the
+same time. Each slot registers its demo inputs and saves its query database
+to the `quail-results` volume. A slot scales down after 15 minutes without a
+request, so run the command again before a scheduled demo.
 
 ## Demo queries
 
