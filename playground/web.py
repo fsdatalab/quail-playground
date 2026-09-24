@@ -58,6 +58,7 @@ HOP_HEADERS = frozenset({
     "connection", "keep-alive", "transfer-encoding", "host", "content-length",
     "authorization", "cookie", "accept-encoding",
 })
+TOKENIZER_LOAD_LOCK = threading.Lock()
 
 
 @dataclass
@@ -100,11 +101,12 @@ class WebSettings:
 
 def hf_tokenizer(model: str):
     """Batch tokenizer of a model, from its Hugging Face checkpoint."""
-    from transformers import AutoTokenizer
-
     from quail.specs import MODELS as SPECS
 
-    tokenizer = AutoTokenizer.from_pretrained(SPECS[model].hf_name)
+    with TOKENIZER_LOAD_LOCK:
+        from transformers import AutoTokenizer
+
+        tokenizer = AutoTokenizer.from_pretrained(SPECS[model].hf_name)
 
     def encode(texts):
         return tokenizer(list(texts), add_special_tokens=False)["input_ids"]
