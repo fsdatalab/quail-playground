@@ -59,6 +59,6 @@ def test_sql_compiles_with_the_expected_operators(key, tiny_tables):
             assert operators.joins[0].selectivity == demos.REACTION_SELECTIVITY
         else:
             assert not filters and len(operators.joins) == 1
-            assert operators.joins[0].anchor == "c"
+            assert "'anchor'" not in item.sql
     finally:
         session.close()

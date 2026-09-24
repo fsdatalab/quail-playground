@@ -126,8 +126,7 @@ FROM conversations AS c
 JOIN tool_questions AS q
   ON c.id = q.conversation_id
  AND AI.IF(
-    PROMPT('{COMPACTION_PROMPT}', c.state, q.statement),
-    {{'anchor': 'c'}}
+    PROMPT('{COMPACTION_PROMPT}', c.state, q.statement)
  )
 """
 
