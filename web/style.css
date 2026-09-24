@@ -104,11 +104,12 @@ main { padding: .75rem 1rem 3rem; }
   text-transform: uppercase;
 }
 .state.idle { background: var(--gray-1); color: var(--muted); }
-.state.queued, .state.planning, .state.running { background: var(--danger-soft); color: var(--danger); }
+.state.submitting, .state.waiting, .state.queued, .state.planning, .state.running { background: var(--danger-soft); color: var(--danger); }
 .state.succeeded { background: var(--foreground); color: #fff; }
 .state.failed, .state.interrupted { background: var(--danger); color: #fff; }
 .state.cancelled { background: var(--gray-2); color: var(--foreground); }
-.state.running::before, .state.planning::before, .state.queued::before {
+.state.running::before, .state.planning::before, .state.queued::before,
+.state.submitting::before, .state.waiting::before {
   display: inline-block;
   width: .55em;
   height: .55em;
