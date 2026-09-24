@@ -16,6 +16,7 @@ import asyncio
 import contextlib
 import hashlib
 import json
+import re
 import threading
 import time
 import uuid
@@ -137,9 +138,14 @@ def server_endpoint(settings: WebSettings, model: str,
     if isinstance(urls, str):
         urls = (urls,)
     slot = 0
-    if query_id and query_id.startswith("q4_"):
+    assigned = re.match(r"q4s(\d+)_", query_id or "")
+    if assigned:
+        slot = int(assigned.group(1))
+    elif query_id and query_id.startswith("q4_"):
         slot = int.from_bytes(
             hashlib.sha256(query_id.encode()).digest()[:8], "big") % len(urls)
+    if slot >= len(urls):
+        raise LookupError(f"no server is deployed for {model} slot {slot}")
     endpoint = urls[slot]
     if not endpoint:
         raise LookupError(f"no server is deployed for {model} slot {slot}")
@@ -512,6 +518,8 @@ def create_web_app(settings: WebSettings) -> Starlette:
                          name="metrics-prewarm").start()
     client = httpx.AsyncClient(timeout=httpx.Timeout(
         PROXY_TIMEOUT_S, read=PROXY_TIMEOUT_S + MAX_WAIT_S))
+    active_queries = {model: {} for model in MODELS}
+    assignment_lock = asyncio.Lock()
 
     def refreshed_manifest() -> dict:
         if settings.reload is not None:
@@ -562,6 +570,7 @@ def create_web_app(settings: WebSettings) -> Starlette:
         path = request.path_params["path"]
         body = await request.body()
         query_id = None
+        reserved = False
         if path == "queries" and request.method == "POST":
             try:
                 payload = json.loads(body)
@@ -570,7 +579,21 @@ def create_web_app(settings: WebSettings) -> Starlette:
             if isinstance(payload, dict):
                 query_id = payload.get("query_id")
                 if query_id is None:
-                    query_id = f"q4_{uuid.uuid4().hex}"
+                    urls = settings.servers.get(model)
+                    if isinstance(urls, str):
+                        urls = (urls,)
+                    if model not in MODELS or not urls or not any(urls):
+                        return _error(f"no server is deployed for {model!r}", 404)
+                    async with assignment_lock:
+                        counts = {
+                            slot: sum(value == slot for value in
+                                      active_queries[model].values())
+                            for slot, url in enumerate(urls) if url
+                        }
+                        slot = min(counts, key=lambda index: (counts[index], index))
+                        query_id = f"q4s{slot}_{uuid.uuid4().hex}"
+                        active_queries[model][query_id] = slot
+                        reserved = True
                     payload["query_id"] = query_id
                     body = json.dumps(payload).encode()
         elif path.startswith("queries/"):
@@ -578,6 +601,9 @@ def create_web_app(settings: WebSettings) -> Starlette:
         try:
             endpoint = server_endpoint(settings, model, query_id)
         except LookupError as error:
+            if reserved:
+                async with assignment_lock:
+                    active_queries[model].pop(query_id, None)
             return _error(str(error), 404)
         url = f"{endpoint}/v1/{path}"
         headers = {name: value for name, value in request.headers.items()
@@ -589,7 +615,26 @@ def create_web_app(settings: WebSettings) -> Starlette:
                 request.method, url, params=request.query_params,
                 headers=headers, content=body)
         except httpx.HTTPError as error:
+            if reserved:
+                async with assignment_lock:
+                    active_queries[model].pop(query_id, None)
             return _error(f"cannot reach the {model} server: {error}", 502)
+        upstream_body = {}
+        if path == "queries" or (path.startswith("queries/") and
+                                  path.count("/") == 1):
+            try:
+                upstream_body = upstream.json()
+            except ValueError:
+                pass
+        if reserved and (upstream.status_code >= 300 or
+                         upstream_body.get("id") != query_id):
+            async with assignment_lock:
+                active_queries[model].pop(query_id, None)
+        elif query_id and path.count("/") == 1 and request.method == "GET":
+            state = upstream_body.get("state")
+            if state in {"succeeded", "failed", "interrupted", "cancelled"}:
+                async with assignment_lock:
+                    active_queries[model].pop(query_id, None)
         return Response(
             upstream.content, status_code=upstream.status_code,
             media_type=upstream.headers.get("content-type"),
