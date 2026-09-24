@@ -521,6 +521,34 @@ def create_web_app(settings: WebSettings) -> Starlette:
     active_queries = {model: {} for model in MODELS}
     assignment_lock = asyncio.Lock()
 
+    async def release_finished_queries(model: str) -> None:
+        """Check tracked queries before choosing a server for the next one."""
+        async with assignment_lock:
+            pending = tuple(active_queries[model])
+        if not pending:
+            return
+
+        async def finished(query_id: str) -> bool:
+            try:
+                endpoint = server_endpoint(settings, model, query_id)
+                headers = ({"authorization": f"Bearer {settings.token}"}
+                           if settings.token else {})
+                response = await client.get(
+                    f"{endpoint}/v1/queries/{query_id}",
+                    headers=headers, timeout=5.0)
+                if response.status_code == 404:
+                    return True
+                return response.json().get("state") in {
+                    "succeeded", "failed", "interrupted", "cancelled"}
+            except (httpx.HTTPError, LookupError, ValueError):
+                return False
+
+        states = await asyncio.gather(*(finished(query_id) for query_id in pending))
+        async with assignment_lock:
+            for query_id, done in zip(pending, states):
+                if done:
+                    active_queries[model].pop(query_id, None)
+
     def refreshed_manifest() -> dict:
         if settings.reload is not None:
             settings.reload()
@@ -584,6 +612,7 @@ def create_web_app(settings: WebSettings) -> Starlette:
                         urls = (urls,)
                     if model not in MODELS or not urls or not any(urls):
                         return _error(f"no server is deployed for {model!r}", 404)
+                    await release_finished_queries(model)
                     async with assignment_lock:
                         counts = {
                             slot: sum(value == slot for value in
