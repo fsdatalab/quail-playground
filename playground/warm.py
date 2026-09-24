@@ -28,33 +28,23 @@ def ping(endpoint: str, timeout_s: float = WARM_TIMEOUT_S) -> int:
         return error.code
 
 
-def warm_servers(
-    servers: Mapping[str, str | None | tuple[str | None, ...]],
-) -> list[str]:
-    """Start every server slot and return one status line per slot."""
+def warm_servers(servers: Mapping[str, str | None]) -> list[str]:
+    """Start one server per model and return one status line per model."""
     started = time.time()
     lines = []
-    targets = []
-    for model in MODELS:
-        endpoints = servers.get(model)
-        if isinstance(endpoints, tuple):
-            targets.extend((f"{model} slot {slot}", endpoint)
-                           for slot, endpoint in enumerate(endpoints))
-        else:
-            targets.append((model, endpoints))
-    with concurrent.futures.ThreadPoolExecutor(len(targets) or 1) as pool:
-        futures = {name: pool.submit(ping, endpoint)
-                   for name, endpoint in targets if endpoint}
-        for name, _endpoint in targets:
-            future = futures.get(name)
+    with concurrent.futures.ThreadPoolExecutor(len(servers) or 1) as pool:
+        futures = {model: pool.submit(ping, endpoint)
+                   for model, endpoint in servers.items() if endpoint}
+        for model in MODELS:
+            future = futures.get(model)
             if future is None:
-                lines.append(f"{name}: no server deployed")
+                lines.append(f"{model}: no server deployed")
                 continue
             try:
                 status = future.result()
             except Exception as error:  # noqa: BLE001, report the error below
-                lines.append(f"{name}: failed: {error}")
+                lines.append(f"{model}: failed: {error}")
                 continue
-            lines.append(f"{name}: HTTP {status} after "
+            lines.append(f"{model}: HTTP {status} after "
                          f"{time.time() - started:.0f} s")
     return lines

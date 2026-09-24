@@ -118,12 +118,3 @@ def test_warm_servers_reports_each_model(monkeypatch):
     assert lines[1] == "qwen3-reranker-0.6b-bf16: no server deployed"
     assert lines[2] == "diffusion-gemma-26b-a4b-fp8: no server deployed"
 
-
-def test_warm_servers_reports_each_slot(monkeypatch):
-    from playground import warm
-
-    monkeypatch.setattr(warm, "ping", lambda endpoint, timeout_s=0: 401)
-    lines = warm.warm_servers({QWEN3_4B: ("http://a", "http://b", None)})
-    assert lines[0].startswith(f"{QWEN3_4B} slot 0: HTTP 401 after")
-    assert lines[1].startswith(f"{QWEN3_4B} slot 1: HTTP 401 after")
-    assert lines[2] == f"{QWEN3_4B} slot 2: no server deployed"

@@ -276,11 +276,13 @@ def page():
 
 @app.local_entrypoint()
 def warm():
-    """Start every server once, so each boots its model before a demo.
+    """Start slot zero for each model before a demo.
 
     Run with ``modal run playground/modal_app.py::warm``.
     """
     from playground.warm import warm_servers
 
-    for line in warm_servers(deployed_server_urls()):
+    first_slots = {model: urls[0] for model, urls in
+                   deployed_server_urls().items()}
+    for line in warm_servers(first_slots):
         print(line, flush=True)
