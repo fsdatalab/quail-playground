@@ -18,6 +18,7 @@ import hashlib
 import json
 import threading
 import time
+import uuid
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Callable
@@ -65,8 +66,8 @@ class WebSettings:
     Args:
         static_dir: The directory with index.html, app.js, and style.css.
         data_dir: The directory ``playground.prepare.build`` wrote.
-        servers: Model name -> base URL of its Quail Server, or None
-            when that server is not deployed.
+        servers: Model name -> four server URLs. A single URL is also
+            accepted for local use.
         token: The servers' bearer token.
         usd_per_hour: The H100 price behind every cost number.
         reload: Called before reading the data directory, to refresh a
@@ -127,13 +128,30 @@ def describe_demo(model: str, item, tables: dict, anchors: dict):
         session.close()
 
 
-def server_client(settings: WebSettings, model: str):
-    """A quail-server client for one model's deployed server."""
+def server_endpoint(settings: WebSettings, model: str,
+                    query_id: str | None = None) -> str:
+    """Return the server slot holding a query."""
+    urls = settings.servers.get(model)
+    if model not in MODELS or not urls:
+        raise LookupError(f"no server is deployed for {model}")
+    if isinstance(urls, str):
+        urls = (urls,)
+    slot = 0
+    if query_id and query_id.startswith("q4_"):
+        slot = int.from_bytes(
+            hashlib.sha256(query_id.encode()).digest()[:8], "big") % len(urls)
+    endpoint = urls[slot]
+    if not endpoint:
+        raise LookupError(f"no server is deployed for {model} slot {slot}")
+    return endpoint
+
+
+def server_client(settings: WebSettings, model: str,
+                  query_id: str | None = None):
+    """A quail-server client for the slot holding a query."""
     from quail.server.client import ServerClient
 
-    endpoint = settings.servers.get(model)
-    if model not in MODELS or not endpoint:
-        raise LookupError(f"no server is deployed for {model}")
+    endpoint = server_endpoint(settings, model, query_id)
     factory = settings.client_factory or ServerClient
     return factory(endpoint, settings.token or "")
 
@@ -159,8 +177,8 @@ class Metrics:
         self._partials: dict = {}
         self._pending: dict = {}
 
-    def _client(self, model: str):
-        return server_client(self.settings, model)
+    def _client(self, model: str, query_id: str):
+        return server_client(self.settings, model, query_id)
 
     def _tables(self, item) -> dict:
         with self._lock:
@@ -293,7 +311,7 @@ class Metrics:
         key = (model, query_id, demo_key)
         try:
             self._prewarm(model, demo_key)
-            client = self._client(model)
+            client = self._client(model, query_id)
             status = client.status(query_id)
             while status.state not in {
                     "succeeded", "failed", "interrupted", "cancelled"}:
@@ -343,7 +361,7 @@ class Metrics:
             if key in self._results and not isinstance(
                     self._results[key], BaseException):
                 return self._results[key]
-        client = self._client(model)
+        client = self._client(model, query_id)
         status = client.status(query_id)
         if status.state != "succeeded":
             raise LookupError(f"query {query_id} is {status.state}")
@@ -387,7 +405,7 @@ class Metrics:
 
     def preview(self, model: str, query_id: str, limit: int = 1000) -> dict:
         """Return the first result rows of a finished query as JSON values."""
-        client = self._client(model)
+        client = self._client(model, query_id)
         status = client.status(query_id)
         if status.state != "succeeded":
             raise LookupError(f"query {query_id} is {status.state}")
@@ -415,7 +433,7 @@ class Metrics:
 
     def csv_result(self, model: str, query_id: str) -> bytes:
         """Return every result row of a finished query as CSV."""
-        client = self._client(model)
+        client = self._client(model, query_id)
         status = client.status(query_id)
         if status.state != "succeeded":
             raise LookupError(f"query {query_id} is {status.state}")
@@ -431,7 +449,7 @@ class Metrics:
 
     def true_pairs(self, model: str, query_id: str) -> dict:
         """Every join answer table's true pairs, as row indices."""
-        client = self._client(model)
+        client = self._client(model, query_id)
         status = client.status(query_id)
         if status.state != "succeeded":
             raise LookupError(f"query {query_id} is {status.state}")
@@ -517,10 +535,15 @@ def create_web_app(settings: WebSettings) -> Starlette:
 
     async def config(request: Request):
         manifest = await run_in_threadpool(refreshed_manifest)
+        public_servers = {}
+        for model in MODELS:
+            urls = settings.servers.get(model)
+            public_servers[model] = (
+                urls[0] if isinstance(urls, (tuple, list)) else urls)
         return JSONResponse({
             "device": DEVICE,
             "models": list(MODELS),
-            "servers": {model: settings.servers.get(model) for model in MODELS},
+            "servers": public_servers,
             "usd_per_hour": settings.usd_per_hour,
             "demos": [item.public() for item in DEMOS],
             "groups": manifest.get("groups", {}),
@@ -537,15 +560,30 @@ def create_web_app(settings: WebSettings) -> Starlette:
     async def proxy(request: Request):
         model = request.path_params["model"]
         path = request.path_params["path"]
-        endpoint = settings.servers.get(model)
-        if model not in MODELS or not endpoint:
-            return _error(f"no server is deployed for {model!r}", 404)
+        body = await request.body()
+        query_id = None
+        if path == "queries" and request.method == "POST":
+            try:
+                payload = json.loads(body)
+            except ValueError:
+                payload = None
+            if isinstance(payload, dict):
+                query_id = payload.get("query_id")
+                if query_id is None:
+                    query_id = f"q4_{uuid.uuid4().hex}"
+                    payload["query_id"] = query_id
+                    body = json.dumps(payload).encode()
+        elif path.startswith("queries/"):
+            query_id = path.split("/", 2)[1]
+        try:
+            endpoint = server_endpoint(settings, model, query_id)
+        except LookupError as error:
+            return _error(str(error), 404)
         url = f"{endpoint}/v1/{path}"
         headers = {name: value for name, value in request.headers.items()
                    if name.lower() not in HOP_HEADERS}
         if settings.token:
             headers["authorization"] = f"Bearer {settings.token}"
-        body = await request.body()
         try:
             upstream = await client.request(
                 request.method, url, params=request.query_params,

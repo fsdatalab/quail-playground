@@ -63,8 +63,11 @@ so run the command again before a scheduled demo.
 ## How it runs
 
 - The playground page runs in a CPU container on Modal.
-- Each model has its own Quail Server running on one H100.
-- The page sends the selected SQL query to the matching server.
+- Each model has four Quail Server slots, each with a separate H100 container
+  limit of one. At most four containers can run for one model.
+- The page assigns each new query to a slot and sends its later status,
+  results, and metrics requests to that same slot. Each slot stores its own
+  query state and results.
 - Quail streams status updates and answer batches back to the page while the
   query runs.
 - The page prepares its token cache while the query runs, then uses the final
