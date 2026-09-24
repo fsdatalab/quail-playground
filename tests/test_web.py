@@ -124,7 +124,8 @@ def test_four_server_slots_keep_query_requests_together(data_dir, monkeypatch):
             return httpx.Response(201, json={"id": query_id})
         query_id = request.url.path.split("/")[3]
         seen.append((host, query_id))
-        return httpx.Response(200, json={"id": query_id})
+        return httpx.Response(200, json={"id": query_id,
+                                         "state": "succeeded"})
 
     original = httpx.AsyncClient
 
@@ -154,9 +155,16 @@ def test_four_server_slots_keep_query_requests_together(data_dir, monkeypatch):
             assert web.server_client(settings, QWEN3_4B, query_id) == (
                 f"http://{seen[-1][0]}")
         assert {host for host, _ in seen} == {url[7:] for url in urls}
-        generated = page.post(f"/s/{QWEN3_4B}/v1/queries",
-                              json={"sql": "SELECT 1"}).json()["id"]
-        assert generated.startswith("q4_")
+        first = page.post(f"/s/{QWEN3_4B}/v1/queries",
+                          json={"sql": "SELECT 1"}).json()["id"]
+        second = page.post(f"/s/{QWEN3_4B}/v1/queries",
+                           json={"sql": "SELECT 1"}).json()["id"]
+        assert first.startswith("q4s0_")
+        assert second.startswith("q4s1_")
+        page.get(f"/s/{QWEN3_4B}/v1/queries/{first}")
+        third = page.post(f"/s/{QWEN3_4B}/v1/queries",
+                          json={"sql": "SELECT 1"}).json()["id"]
+        assert third.startswith("q4s0_")
         assert web.server_endpoint(settings, QWEN3_4B, "q1") == urls[0]
         missing = list(urls)
         missing[1] = None

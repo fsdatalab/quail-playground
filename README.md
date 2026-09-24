@@ -67,9 +67,9 @@ the command again before a scheduled demo.
 - The playground page runs in a CPU container on Modal.
 - Each model has four Quail Server slots, each with a separate H100 container
   limit of one. At most four containers can run for one model.
-- The page assigns each new query to a slot and sends its later status,
-  results, and metrics requests to that same slot. Each slot stores its own
-  query state and results.
+- The page gives a new query to the warm slot when it is free. Other slots
+  take concurrent queries. The page sends later status, results, and metrics
+  requests to the same slot. Each slot stores its own query state and results.
 - Quail streams status updates and answer batches back to the page while the
   query runs.
 - The page prepares its token cache while the query runs, then uses the final

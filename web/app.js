@@ -412,6 +412,11 @@ async function run() {
   const timer = setInterval(() => {
     const elapsed = (performance.now() - started) / 1000;
     $("timer").textContent = `${elapsed.toFixed(1)} s`;
+    if (!run.id && elapsed >= 5 && !run.waitingForServer) {
+      run.waitingForServer = true;
+      logEvent(run, "waiting for the model server to accept the query");
+      $("progress").textContent = "Waiting for the model server…";
+    }
     if (state.run === run) tickCards(run);
   }, 100);
   try {
