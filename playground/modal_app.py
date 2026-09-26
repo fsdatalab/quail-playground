@@ -13,7 +13,8 @@ query on a container does not pay the boot, then restores the server's
 database from the Volume and starts quail-server. There is no memory
 snapshot: quail's boot is 12 to 50 seconds from the cached weights and
 kernels, and restoring a GPU snapshot of the KV arena took as long or
-longer. A container stays up ``SCALEDOWN_S`` after its last request.
+longer. Slot zero stays warm for each model. The other slots stay up
+``SCALEDOWN_S`` after their last request.
 
 The page and the servers share one image. The demo data
 (``playground.prepare``) is built into it when the image builds, and
@@ -175,8 +176,8 @@ class ServerContainer:
             self.checkpoint.stop()
 
 
-def server_class(cls):
-    """Apply the shared container options of a server class."""
+def server_class(cls, slot: int):
+    """Apply the container options of a server slot."""
     return app.cls(
         image=image,
         gpu="H100!",
@@ -189,6 +190,7 @@ def server_class(cls):
         secrets=[secret],
         timeout=24 * 3600,
         scaledown_window=SCALEDOWN_S,
+        min_containers=1 if slot == 0 else 0,
         max_containers=1,
     )(modal.concurrent(max_inputs=64)(cls))
 
@@ -218,7 +220,7 @@ def register_server(model: str, slot: int) -> None:
 
     ModelServer.__name__ = class_name
     ModelServer.__qualname__ = class_name
-    globals()[class_name] = server_class(ModelServer)
+    globals()[class_name] = server_class(ModelServer, slot)
 
 
 for _model in MODELS:
@@ -276,7 +278,7 @@ def page():
 
 @app.local_entrypoint()
 def warm():
-    """Start slot zero for each model before a demo.
+    """Check that slot zero is ready for each model.
 
     Run with ``modal run playground/modal_app.py::warm``.
     """
